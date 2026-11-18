@@ -92,6 +92,25 @@ const EditableChalkboardPanel: React.FC<{
     }
   }, [mode, boardData?.drawingDataUrl, readOnlyPreview]);
 
+  // iOS Safari / Android 行動裝置鎖定觸控事件：阻止手寫塗鴉時觸發頁面捲動與文字選取
+  useEffect(() => {
+    if (mode !== 'draw' || readOnlyPreview) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const preventTouchScroll = (ev: TouchEvent) => {
+      ev.preventDefault();
+    };
+
+    canvas.addEventListener('touchstart', preventTouchScroll, { passive: false });
+    canvas.addEventListener('touchmove', preventTouchScroll, { passive: false });
+
+    return () => {
+      canvas.removeEventListener('touchstart', preventTouchScroll);
+      canvas.removeEventListener('touchmove', preventTouchScroll);
+    };
+  }, [mode, readOnlyPreview]);
+
   const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -162,7 +181,13 @@ const EditableChalkboardPanel: React.FC<{
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    window.getSelection()?.removeAllRanges();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // 忽略部分行動瀏覽器未支援或已釋放的 pointerId
+    }
     pushHistory();
     isDrawingRef.current = true;
     const pt = getCanvasPoint(e);
@@ -173,6 +198,7 @@ const EditableChalkboardPanel: React.FC<{
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isDrawingRef.current || !lastPosRef.current) return;
+    e.preventDefault();
     const ctx = canvasRef.current?.getContext('2d');
     if (!ctx) return;
     const pt = getCanvasPoint(e);
@@ -349,8 +375,11 @@ const EditableChalkboardPanel: React.FC<{
           </div>
         </div>
       ) : (
-        <div className="space-y-2.5">
-          <div className="chalkboard-surface rounded-2xl overflow-hidden border border-white/10 relative touch-none">
+        <div className="space-y-2.5 select-none">
+          <div
+            onContextMenu={(e) => e.preventDefault()}
+            className="chalkboard-surface rounded-2xl overflow-hidden border border-white/10 relative touch-none select-none overscroll-none [-webkit-touch-callout:none]"
+          >
             <canvas
               ref={canvasRef}
               width={640}
@@ -359,7 +388,8 @@ const EditableChalkboardPanel: React.FC<{
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onPointerCancel={handlePointerUp}
-              className={`w-full block cursor-crosshair touch-none ${
+              onContextMenu={(e) => e.preventDefault()}
+              className={`w-full block cursor-crosshair touch-none select-none overscroll-none [-webkit-touch-callout:none] ${
                 compact ? 'h-[190px] sm:h-[220px]' : 'h-[220px] sm:h-[250px]'
               }`}
             />
