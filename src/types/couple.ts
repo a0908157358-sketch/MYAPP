@@ -27,6 +27,9 @@ export interface PartnerProfile {
   roleLabel: string;
   nickname: string;
   avatarDataUrl: string;
+  moodEmoji?: string;
+  moodText?: string;
+  customMoods?: string[];
   allowedEmails: string[];
   createdAt?: unknown;
   updatedAt?: unknown;
@@ -118,6 +121,17 @@ export interface TimeCapsuleLetter {
   unlockAtMs: number;
   opened: boolean;
   openedAtIso: string;
+  allowedEmails: string[];
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface SharedMemo {
+  id: string;
+  content: string;
+  completed: boolean;
+  creatorUid: string;
+  creatorName: string;
   allowedEmails: string[];
   createdAt?: unknown;
   updatedAt?: unknown;

@@ -40,6 +40,7 @@ export const SettingsSection: React.FC<{
     timeline: string[];
     polaroids: string[];
     capsules: string[];
+    memos: string[];
   };
 }> = ({
   coupleSpace,
@@ -118,6 +119,7 @@ export const SettingsSection: React.FC<{
         addUpdates('timeline', allDocIdsToSyncEmail.timeline);
         addUpdates('polaroids', allDocIdsToSyncEmail.polaroids);
         addUpdates('capsules', allDocIdsToSyncEmail.capsules);
+        addUpdates('memos', allDocIdsToSyncEmail.memos);
         await batch.commit();
       }
 

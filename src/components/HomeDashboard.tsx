@@ -7,9 +7,11 @@ import {
   ChevronRight,
   HeartHandshake,
 } from 'lucide-react';
-import { ChalkboardData, CoupleSpace, PartnerProfile } from '../types/couple';
+import { ChalkboardData, CoupleSpace, PartnerProfile, SharedMemo } from '../types/couple';
 import { computeLoveMetrics, computeUpcomingMilestones } from '../utils/loveTime';
 import { PinnedHomeChalkboard } from './ChalkboardSection';
+import { MoodStatusBar } from './MoodStatusBar';
+import { SharedMemoCard } from './SharedMemoCard';
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
@@ -21,6 +23,7 @@ export const HomeDashboard: React.FC<{
   otherProfile: PartnerProfile | null;
   activeBoard: ChalkboardData | null;
   otherBoard: ChalkboardData | null;
+  memos: SharedMemo[];
   allowedEmails: string[];
   perspectiveMode: 'self' | 'partner';
   onTogglePerspective: () => void;
@@ -34,6 +37,7 @@ export const HomeDashboard: React.FC<{
   otherProfile,
   activeBoard,
   otherBoard,
+  memos,
   allowedEmails,
   perspectiveMode,
   onTogglePerspective,
@@ -80,64 +84,68 @@ export const HomeDashboard: React.FC<{
 
   return (
     <div className="space-y-5">
-      {/* 1. 頂部高質感識別區：合併雙人大頭貼與真實暱稱，點擊可快速切換視角 */}
-      <header className="flex items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={onTogglePerspective}
-          disabled={!partnerProfile}
-          className="glass-card rounded-full pl-2 pr-4 py-1.5 flex items-center gap-3 transition hover:scale-[1.01] active:scale-[0.98] disabled:cursor-default max-w-full"
-          title={partnerProfile ? '點擊切換雙人預覽視角' : undefined}
-        >
-          <div className="flex -space-x-2.5 shrink-0">
-            <div className="h-9 w-9 rounded-full border-2 border-[var(--bg-canvas)] overflow-hidden bg-white/10 flex items-center justify-center shadow">
-              {myProfile.avatarDataUrl ? (
-                <img
-                  src={myProfile.avatarDataUrl}
-                  alt={myProfile.nickname}
-                  referrerPolicy="no-referrer"
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <span className="text-xs font-semibold">{myProfile.nickname.slice(0, 1)}</span>
-              )}
-            </div>
-            <div className="h-9 w-9 rounded-full border-2 border-[var(--bg-canvas)] overflow-hidden bg-white/10 flex items-center justify-center shadow">
-              {partnerProfile?.avatarDataUrl ? (
-                <img
-                  src={partnerProfile.avatarDataUrl}
-                  alt={partnerProfile.nickname}
-                  referrerPolicy="no-referrer"
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <span className="text-xs font-semibold text-[var(--text-muted)]">
-                  {partnerProfile?.nickname?.slice(0, 1) || '♥'}
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-sm font-semibold tracking-tight truncate">
-              {myProfile.nickname} &amp; {partnerProfile?.nickname || '另一半'}
-            </span>
-            {partnerProfile && (
-              <ArrowLeftRight
-                className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]"
-                aria-hidden="true"
-              />
-            )}
-          </div>
-        </button>
-
-        {isPreview && (
-          <span
-            className="text-xs font-medium px-3 py-1.5 rounded-full glass-card shrink-0 text-[var(--accent-600)] dark:text-[var(--accent-400)]"
+      {/* 1. 頂部高質感識別區：雙人大頭貼真實暱稱 + 今日心情與狀態膠囊 */}
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2.5 max-w-full">
+          <button
+            type="button"
+            onClick={onTogglePerspective}
+            disabled={!partnerProfile}
+            className="glass-card rounded-full pl-2 pr-4 py-1.5 flex items-center gap-3 transition hover:scale-[1.01] active:scale-[0.98] disabled:cursor-default max-w-full"
+            title={partnerProfile ? '點擊切換雙人預覽視角' : undefined}
           >
-            正以 {activeProfile.nickname} 視角預覽
-          </span>
-        )}
+            <div className="flex -space-x-2.5 shrink-0">
+              <div className="h-9 w-9 rounded-full border-2 border-[var(--bg-canvas)] overflow-hidden bg-white/10 flex items-center justify-center shadow">
+                {myProfile.avatarDataUrl ? (
+                  <img
+                    src={myProfile.avatarDataUrl}
+                    alt={myProfile.nickname}
+                    referrerPolicy="no-referrer"
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <span className="text-xs font-semibold">{myProfile.nickname.slice(0, 1)}</span>
+                )}
+              </div>
+              <div className="h-9 w-9 rounded-full border-2 border-[var(--bg-canvas)] overflow-hidden bg-white/10 flex items-center justify-center shadow">
+                {partnerProfile?.avatarDataUrl ? (
+                  <img
+                    src={partnerProfile.avatarDataUrl}
+                    alt={partnerProfile.nickname}
+                    referrerPolicy="no-referrer"
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <span className="text-xs font-semibold text-[var(--text-muted)]">
+                    {partnerProfile?.nickname?.slice(0, 1) || '♥'}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-sm font-semibold tracking-tight truncate">
+                {myProfile.nickname} &amp; {partnerProfile?.nickname || '另一半'}
+              </span>
+              {partnerProfile && (
+                <ArrowLeftRight
+                  className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]"
+                  aria-hidden="true"
+                />
+              )}
+            </div>
+          </button>
+
+          {isPreview && (
+            <span
+              className="text-xs font-medium px-3 py-1.5 rounded-full glass-card shrink-0 text-[var(--accent-600)] dark:text-[var(--accent-400)]"
+            >
+              正以 {activeProfile.nickname} 視角預覽
+            </span>
+          )}
+        </div>
+
+        <MoodStatusBar myProfile={myProfile} partnerProfile={partnerProfile} />
       </header>
 
       {/* 2. 首頁置頂：擬真暗色磨砂互動小黑板（預設顯示對方的黑板留言） */}
@@ -350,6 +358,13 @@ export const HomeDashboard: React.FC<{
           ))}
         </div>
       </section>
+
+      {/* 5. 首頁最下方：雙人共享備忘錄 */}
+      <SharedMemoCard
+        memos={memos}
+        myProfile={myProfile}
+        allowedEmails={allowedEmails}
+      />
     </div>
   );
 };

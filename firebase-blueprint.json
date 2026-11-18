@@ -41,7 +41,7 @@
     },
     "PartnerProfile": {
       "title": "PartnerProfile",
-      "description": "Bound identity, role, nickname, and compressed avatar for each partner.",
+      "description": "Bound identity, role, nickname, compressed avatar, and live mood status for each partner.",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "maxLength": 128 },
@@ -50,6 +50,9 @@
         "roleLabel": { "type": "string", "maxLength": 20 },
         "nickname": { "type": "string", "maxLength": 30 },
         "avatarDataUrl": { "type": "string", "maxLength": 200000 },
+        "moodEmoji": { "type": "string", "maxLength": 16 },
+        "moodText": { "type": "string", "maxLength": 24 },
+        "customMoods": { "type": "array", "description": "Up to 12 user-created mood status strings (emoji|text)." },
         "allowedEmails": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -194,6 +197,22 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "senderUid", "senderName", "recipientLabel", "title", "content", "unlockAtIso", "unlockAtMs", "opened", "openedAtIso", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "SharedMemo": {
+      "title": "SharedMemo",
+      "description": "Shared daily memo and to-do item synced in real time between both partners.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "content": { "type": "string", "maxLength": 120 },
+        "completed": { "type": "boolean" },
+        "creatorUid": { "type": "string", "maxLength": 128 },
+        "creatorName": { "type": "string", "maxLength": 30 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "content", "completed", "creatorUid", "creatorName", "allowedEmails", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -203,7 +222,7 @@
     },
     "/partners/{partnerId}": {
       "schema": { "$ref": "#/entities/PartnerProfile" },
-      "description": "Bound identity profiles for the two authorized partners."
+      "description": "Bound identity profiles and mood statuses for the two authorized partners."
     },
     "/chalkboards/{boardId}": {
       "schema": { "$ref": "#/entities/Chalkboard" },
@@ -228,6 +247,10 @@
     "/capsules/{capsuleId}": {
       "schema": { "$ref": "#/entities/TimeCapsule" },
       "description": "Time-locked future letters."
+    },
+    "/memos/{memoId}": {
+      "schema": { "$ref": "#/entities/SharedMemo" },
+      "description": "Shared couple memo and daily todo list."
     }
   }
 }
