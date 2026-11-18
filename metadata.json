@@ -1,0 +1,6 @@
+{
+  "name": "嶼你 · 雙人專屬時光空間",
+  "description": "專屬於情侶兩人的現代微玻璃擬態 PWA，提供即時雙人小黑板、QR與密碼願望券、四維度時間儀表板、動態液體升級愛心、故事時間軸、3D拍立得牆與時光膠囊。",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

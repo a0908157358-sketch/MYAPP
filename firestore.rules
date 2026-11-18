@@ -1,0 +1,498 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: default-deny all reads and writes
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email != null && request.auth.token.email_verified == true;
+    }
+
+    function userEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function isValidAllowedEmails(emails) {
+      return emails is list &&
+        emails.size() >= 1 &&
+        emails.size() <= 2 &&
+        emails[0] is string &&
+        emails[0].size() >= 3 &&
+        emails[0].size() <= 120 &&
+        (emails.size() == 1 || (emails[1] is string && emails[1].size() >= 3 && emails[1].size() <= 120));
+    }
+
+    function isCoupleMember() {
+      return isVerifiedUser() && (
+        userEmail() in ['a0908157358@gmail.com', 'yu67428@gmail.com'] ||
+        (
+          exists(/databases/$(database)/documents/coupleSpace/main) &&
+          userEmail() in get(/databases/$(database)/documents/coupleSpace/main).data.allowedEmails
+        )
+      );
+    }
+
+    function isDateString(val) {
+      return val is string && val.size() <= 20 && (val == '' || val.matches('^\\d{4}-\\d{2}-\\d{2}$'));
+    }
+
+    // Startup connection check document
+    match /test/connection {
+      allow get: if isVerifiedUser();
+      allow list, write: if false;
+    }
+
+    // 1. Couple Space Configuration & Dates
+    function isValidCoupleSpace(data) {
+      return data.keys().hasAll([
+          'partner1Email', 'partner2Email', 'allowedEmails',
+          'firstMetDate', 'firstTogetherDate', 'firstApartDate', 'reunitedDate',
+          'partner1Birthday', 'partner2Birthday', 'spaceTitle',
+          'pinEnabled', 'pinCode', 'updatedBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'partner1Email', 'partner2Email', 'allowedEmails',
+          'firstMetDate', 'firstTogetherDate', 'firstApartDate', 'reunitedDate',
+          'partner1Birthday', 'partner2Birthday', 'spaceTitle',
+          'pinEnabled', 'pinCode', 'updatedBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.partner1Email is string && data.partner1Email.size() >= 3 && data.partner1Email.size() <= 120 &&
+        data.partner2Email is string && data.partner2Email.size() >= 3 && data.partner2Email.size() <= 120 &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        isDateString(data.firstMetDate) &&
+        isDateString(data.firstTogetherDate) &&
+        isDateString(data.firstApartDate) &&
+        isDateString(data.reunitedDate) &&
+        isDateString(data.partner1Birthday) &&
+        isDateString(data.partner2Birthday) &&
+        data.spaceTitle is string && data.spaceTitle.size() >= 1 && data.spaceTitle.size() <= 40 &&
+        data.pinEnabled is bool &&
+        data.pinCode is string && (data.pinCode == '' || data.pinCode.matches('^\\d{4}$')) &&
+        data.updatedBy is string && data.updatedBy == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /coupleSpace/{spaceId} {
+      allow get: if isValidId(spaceId) && isVerifiedUser() && (
+        userEmail() in ['a0908157358@gmail.com', 'yu67428@gmail.com'] ||
+        (resource != null && userEmail() in existing().allowedEmails)
+      );
+      allow list: if false;
+      allow create: if isValidId(spaceId) && spaceId == 'main' &&
+        isVerifiedUser() &&
+        isValidCoupleSpace(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (userEmail() in ['a0908157358@gmail.com', 'yu67428@gmail.com']);
+      allow update: if isValidId(spaceId) && spaceId == 'main' &&
+        isVerifiedUser() &&
+        isValidCoupleSpace(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (userEmail() in existing().allowedEmails || userEmail() in ['a0908157358@gmail.com', 'yu67428@gmail.com']) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'partner1Email', 'partner2Email', 'allowedEmails',
+          'firstMetDate', 'firstTogetherDate', 'firstApartDate', 'reunitedDate',
+          'partner1Birthday', 'partner2Birthday', 'spaceTitle',
+          'pinEnabled', 'pinCode', 'updatedBy', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // 2. Partner Profiles
+    function isValidPartnerProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'email', 'role', 'roleLabel', 'nickname', 'avatarDataUrl',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'email', 'role', 'roleLabel', 'nickname', 'avatarDataUrl',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid is string && data.uid == request.auth.uid &&
+        data.email is string && data.email.size() <= 120 && data.email.lower() == userEmail() &&
+        data.role in ['boy', 'girl', 'custom'] &&
+        data.roleLabel is string && data.roleLabel.size() >= 1 && data.roleLabel.size() <= 20 &&
+        data.nickname is string && data.nickname.size() >= 1 && data.nickname.size() <= 30 &&
+        data.avatarDataUrl is string && data.avatarDataUrl.size() <= 200000 &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /partners/{partnerId} {
+      allow get: if isValidId(partnerId) && isCoupleMember() && (partnerId == request.auth.uid || userEmail() in existing().allowedEmails);
+      allow list: if isVerifiedUser() && userEmail() in resource.data.allowedEmails;
+      allow create: if isValidId(partnerId) && partnerId == request.auth.uid &&
+        isCoupleMember() &&
+        isValidPartnerProfile(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(partnerId) && partnerId == request.auth.uid &&
+        isCoupleMember() &&
+        isValidPartnerProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().email == existing().email &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'role', 'roleLabel', 'nickname', 'avatarDataUrl', 'allowedEmails', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // 3. Dual Interactive Chalkboards (strictly owner-editable)
+    function isValidChalkboard(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'ownerEmail', 'mode', 'textContent', 'fontSize',
+          'chalkColor', 'drawingDataUrl', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerUid', 'ownerEmail', 'mode', 'textContent', 'fontSize',
+          'chalkColor', 'drawingDataUrl', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.ownerUid is string && data.ownerUid == request.auth.uid &&
+        data.ownerEmail is string && data.ownerEmail.size() <= 120 && data.ownerEmail.lower() == userEmail() &&
+        data.mode in ['text', 'draw'] &&
+        data.textContent is string && data.textContent.size() <= 600 &&
+        data.fontSize in ['sm', 'md', 'lg'] &&
+        data.chalkColor in ['white', 'pink', 'blue', 'yellow'] &&
+        data.drawingDataUrl is string && data.drawingDataUrl.size() <= 350000 &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /chalkboards/{boardId} {
+      allow get: if isValidId(boardId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+      allow list: if isVerifiedUser() && userEmail() in resource.data.allowedEmails;
+      allow create: if isValidId(boardId) && boardId == request.auth.uid &&
+        isCoupleMember() &&
+        isValidChalkboard(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(boardId) && boardId == request.auth.uid &&
+        isCoupleMember() &&
+        isValidChalkboard(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().ownerEmail == existing().ownerEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'mode', 'textContent', 'fontSize', 'chalkColor', 'drawingDataUrl', 'allowedEmails', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // 4. Wish Vouchers (QR & 4-digit PIN redemption + Terminal Locking)
+    function isValidVoucher(data) {
+      return data.keys().hasAll([
+          'id', 'creatorUid', 'creatorEmail', 'creatorName', 'recipientEmail',
+          'title', 'description', 'expiresAt', 'status', 'redeemCode',
+          'qrToken', 'redeemedAt', 'redeemedMethod', 'redeemedByUid',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'creatorUid', 'creatorEmail', 'creatorName', 'recipientEmail',
+          'title', 'description', 'expiresAt', 'status', 'redeemCode',
+          'qrToken', 'redeemedAt', 'redeemedMethod', 'redeemedByUid',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
+        data.creatorEmail is string && data.creatorEmail.size() <= 120 &&
+        data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 30 &&
+        data.recipientEmail is string && data.recipientEmail.size() >= 3 && data.recipientEmail.size() <= 120 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 60 &&
+        data.description is string && data.description.size() <= 300 &&
+        isDateString(data.expiresAt) &&
+        data.status in ['active', 'redeemed'] &&
+        data.redeemCode is string && (data.redeemCode == '' || data.redeemCode.matches('^\\d{4}$')) &&
+        data.qrToken is string && data.qrToken.size() >= 8 && data.qrToken.size() <= 64 &&
+        data.redeemedAt is string && data.redeemedAt.size() <= 40 &&
+        data.redeemedMethod in ['', 'qr', 'pin'] &&
+        data.redeemedByUid is string && data.redeemedByUid.size() <= 128 &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /vouchers/{voucherId} {
+      allow get: if isValidId(voucherId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+      allow list: if isVerifiedUser() && userEmail() in resource.data.allowedEmails;
+      allow create: if isValidId(voucherId) &&
+        isCoupleMember() &&
+        isValidVoucher(incoming()) &&
+        incoming().id == voucherId &&
+        incoming().creatorUid == request.auth.uid &&
+        incoming().creatorEmail.lower() == userEmail() &&
+        incoming().status == 'active' &&
+        incoming().redeemedAt == '' &&
+        incoming().redeemedMethod == '' &&
+        incoming().redeemedByUid == '' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(voucherId) &&
+        isCoupleMember() &&
+        userEmail() in existing().allowedEmails &&
+        existing().status == 'active' &&
+        isValidVoucher(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().creatorUid == existing().creatorUid &&
+        incoming().creatorEmail == existing().creatorEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            incoming().status == 'active' &&
+            incoming().redeemCode.matches('^\\d{4}$') &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['redeemCode', 'updatedAt'])
+          ) ||
+          (
+            incoming().status == 'redeemed' &&
+            incoming().redeemedAt.size() > 0 &&
+            incoming().redeemedMethod in ['qr', 'pin'] &&
+            incoming().redeemedByUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'redeemedAt', 'redeemedMethod', 'redeemedByUid', 'updatedAt'])
+          ) ||
+          (
+            incoming().status == 'active' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(voucherId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+    }
+
+    // 5. Shared Wishlist (Bucket List)
+    function isValidWishlistItem(data) {
+      return data.keys().hasAll([
+          'id', 'title', 'note', 'completed', 'completedAt',
+          'creatorUid', 'creatorName', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'title', 'note', 'completed', 'completedAt',
+          'creatorUid', 'creatorName', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+        data.note is string && data.note.size() <= 240 &&
+        data.completed is bool &&
+        data.completedAt is string && data.completedAt.size() <= 40 &&
+        data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
+        data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 30 &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /wishlist/{itemId} {
+      allow get: if isValidId(itemId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+      allow list: if isVerifiedUser() && userEmail() in resource.data.allowedEmails;
+      allow create: if isValidId(itemId) &&
+        isCoupleMember() &&
+        isValidWishlistItem(incoming()) &&
+        incoming().id == itemId &&
+        incoming().creatorUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(itemId) &&
+        isCoupleMember() &&
+        userEmail() in existing().allowedEmails &&
+        isValidWishlistItem(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().creatorUid == existing().creatorUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['completed', 'completedAt', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'note', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
+        );
+      allow delete: if isValidId(itemId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+    }
+
+    // 6. Story Timeline
+    function isValidTimelineNode(data) {
+      return data.keys().hasAll([
+          'id', 'eventDate', 'title', 'story', 'mood', 'photoDataUrl',
+          'creatorUid', 'creatorName', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'eventDate', 'title', 'story', 'mood', 'photoDataUrl',
+          'creatorUid', 'creatorName', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isDateString(data.eventDate) && data.eventDate.size() == 10 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 80 &&
+        data.story is string && data.story.size() >= 1 && data.story.size() <= 1200 &&
+        data.mood is string && data.mood.size() >= 1 && data.mood.size() <= 20 &&
+        data.photoDataUrl is string && data.photoDataUrl.size() <= 450000 &&
+        data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
+        data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 30 &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /timeline/{nodeId} {
+      allow get: if isValidId(nodeId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+      allow list: if isVerifiedUser() && userEmail() in resource.data.allowedEmails;
+      allow create: if isValidId(nodeId) &&
+        isCoupleMember() &&
+        isValidTimelineNode(incoming()) &&
+        incoming().id == nodeId &&
+        incoming().creatorUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(nodeId) &&
+        isCoupleMember() &&
+        userEmail() in existing().allowedEmails &&
+        isValidTimelineNode(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().creatorUid == existing().creatorUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['eventDate', 'title', 'story', 'mood', 'photoDataUrl', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
+        );
+      allow delete: if isValidId(nodeId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+    }
+
+    // 7. Polaroid Wall
+    function isValidPolaroid(data) {
+      return data.keys().hasAll([
+          'id', 'photoDataUrl', 'captionDate', 'frontCaption', 'backNote',
+          'location', 'tiltDeg', 'creatorUid', 'creatorName',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'photoDataUrl', 'captionDate', 'frontCaption', 'backNote',
+          'location', 'tiltDeg', 'creatorUid', 'creatorName',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.photoDataUrl is string && data.photoDataUrl.size() >= 10 && data.photoDataUrl.size() <= 450000 &&
+        data.captionDate is string && data.captionDate.size() >= 1 && data.captionDate.size() <= 30 &&
+        data.frontCaption is string && data.frontCaption.size() >= 1 && data.frontCaption.size() <= 60 &&
+        data.backNote is string && data.backNote.size() <= 400 &&
+        data.location is string && data.location.size() <= 60 &&
+        data.tiltDeg is number && data.tiltDeg >= -8 && data.tiltDeg <= 8 &&
+        data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
+        data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 30 &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /polaroids/{photoId} {
+      allow get: if isValidId(photoId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+      allow list: if isVerifiedUser() && userEmail() in resource.data.allowedEmails;
+      allow create: if isValidId(photoId) &&
+        isCoupleMember() &&
+        isValidPolaroid(incoming()) &&
+        incoming().id == photoId &&
+        incoming().creatorUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(photoId) &&
+        isCoupleMember() &&
+        userEmail() in existing().allowedEmails &&
+        isValidPolaroid(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().creatorUid == existing().creatorUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['backNote', 'location', 'frontCaption', 'captionDate', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
+        );
+      allow delete: if isValidId(photoId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+    }
+
+    // 8. Time Capsules (strictly locked until unlockAtMs)
+    function isValidTimeCapsule(data) {
+      return data.keys().hasAll([
+          'id', 'senderUid', 'senderName', 'recipientLabel', 'title', 'content',
+          'unlockAtIso', 'unlockAtMs', 'opened', 'openedAtIso',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'senderUid', 'senderName', 'recipientLabel', 'title', 'content',
+          'unlockAtIso', 'unlockAtMs', 'opened', 'openedAtIso',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 30 &&
+        data.recipientLabel is string && data.recipientLabel.size() >= 1 && data.recipientLabel.size() <= 30 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 80 &&
+        data.content is string && data.content.size() >= 1 && data.content.size() <= 3000 &&
+        data.unlockAtIso is string && data.unlockAtIso.size() >= 10 && data.unlockAtIso.size() <= 40 &&
+        data.unlockAtMs is number && data.unlockAtMs > 0 &&
+        data.opened is bool &&
+        data.openedAtIso is string && data.openedAtIso.size() <= 40 &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /capsules/{capsuleId} {
+      allow get: if isValidId(capsuleId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+      allow list: if isVerifiedUser() && userEmail() in resource.data.allowedEmails;
+      allow create: if isValidId(capsuleId) &&
+        isCoupleMember() &&
+        isValidTimeCapsule(incoming()) &&
+        incoming().id == capsuleId &&
+        incoming().senderUid == request.auth.uid &&
+        incoming().opened == false &&
+        incoming().openedAtIso == '' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(capsuleId) &&
+        isCoupleMember() &&
+        userEmail() in existing().allowedEmails &&
+        isValidTimeCapsule(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().senderUid == existing().senderUid &&
+        incoming().title == existing().title &&
+        incoming().content == existing().content &&
+        incoming().unlockAtMs == existing().unlockAtMs &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            existing().opened == false &&
+            incoming().opened == true &&
+            incoming().openedAtIso.size() > 0 &&
+            request.time.toMillis() >= existing().unlockAtMs &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['opened', 'openedAtIso', 'updatedAt'])
+          ) ||
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(capsuleId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+    }
+  }
+}

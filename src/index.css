@@ -1,0 +1,140 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --font-sans: "Plus Jakarta Sans", "Noto Sans TC", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-serif: "Playfair Display", "Noto Sans TC", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* 淺色模式：溫潤奶茶色預設（可由設定頁 Color Picker 自訂） */
+  --bg-canvas: #F5EBE0;
+  --bg-surface: rgba(253, 251, 247, 0.78);
+  --bg-surface-strong: rgba(253, 251, 247, 0.94);
+  --border-glass: rgba(44, 34, 30, 0.09);
+  --inner-sheen: rgba(255, 255, 255, 0.7);
+  --text-primary: #2B221E;
+  --text-secondary: #62544D;
+  --text-muted: #95867D;
+
+  /* 強調色（可由設定頁 Color Picker 自訂） */
+  --accent-400: #D8B38C;
+  --accent-500: #C89B6E;
+  --accent-600: #AC7F53;
+  --accent-700: #8D643D;
+  --accent-glow-1: rgba(200, 155, 110, 0.16);
+  --accent-glow-2: rgba(216, 179, 140, 0.14);
+}
+
+.dark {
+  /* 深色模式：高級碳灰黑預設（可由設定頁 Color Picker 自訂） */
+  --bg-canvas: #121316;
+  --bg-surface: rgba(26, 28, 35, 0.78);
+  --bg-surface-strong: rgba(30, 32, 40, 0.92);
+  --border-glass: rgba(255, 255, 255, 0.09);
+  --inner-sheen: rgba(255, 255, 255, 0.05);
+  --text-primary: #F5F2ED;
+  --text-secondary: #BDB8B0;
+  --text-muted: #84807A;
+  --accent-glow-1: rgba(200, 155, 110, 0.18);
+  --accent-glow-2: rgba(216, 179, 140, 0.12);
+}
+
+html,
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: contain;
+  transition: background-color 220ms ease, color 220ms ease;
+}
+
+.dark body {
+  letter-spacing: 0.01em;
+}
+
+.font-serif-editorial {
+  font-family: var(--font-serif);
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.glass-card {
+  background: var(--bg-surface);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  border: 1px solid var(--border-glass);
+  box-shadow: inset 0 1px 0 0 var(--inner-sheen), 0 10px 28px -16px rgba(0, 0, 0, 0.22);
+}
+
+.glass-card-strong {
+  background: var(--bg-surface-strong);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  border: 1px solid var(--border-glass);
+  box-shadow: inset 0 1px 0 0 var(--inner-sheen), 0 20px 44px -18px rgba(0, 0, 0, 0.35);
+}
+
+.pb-safe {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+.pt-safe {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+
+/* 3D Polaroid Flip Utilities */
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+/* 擬真磨砂小黑板質感 */
+.chalkboard-surface {
+  background-color: #171A1C;
+  background-image:
+    radial-gradient(circle at 22% 18%, rgba(255, 250, 240, 0.045), transparent 55%),
+    radial-gradient(circle at 82% 80%, rgba(255, 250, 240, 0.03), transparent 52%);
+  box-shadow:
+    inset 0 0 38px rgba(0, 0, 0, 0.58),
+    0 12px 30px -16px rgba(0, 0, 0, 0.45);
+}
+
+@keyframes waveSlide {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-wave-slow {
+  animation: waveSlide 5.5s linear infinite;
+}
+
+.animate-wave-fast {
+  animation: waveSlide 3.6s linear infinite reverse;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-wave-slow,
+  .animate-wave-fast {
+    animation: none;
+  }
+}

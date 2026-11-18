@@ -1,0 +1,233 @@
+{
+  "entities": {
+    "CoupleSpace": {
+      "title": "CoupleSpace",
+      "description": "Shared settings, key dates, partner whitelist, and privacy PIN lock for the couple sanctuary.",
+      "type": "object",
+      "properties": {
+        "partner1Email": { "type": "string", "maxLength": 120 },
+        "partner2Email": { "type": "string", "maxLength": 120 },
+        "allowedEmails": { "type": "array", "description": "Exactly 1-2 authorized lowercase emails." },
+        "firstMetDate": { "type": "string", "maxLength": 20, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "firstTogetherDate": { "type": "string", "maxLength": 20, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "firstApartDate": { "type": "string", "maxLength": 20, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "reunitedDate": { "type": "string", "maxLength": 20, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "partner1Birthday": { "type": "string", "maxLength": 20, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "partner2Birthday": { "type": "string", "maxLength": 20, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "spaceTitle": { "type": "string", "maxLength": 40 },
+        "pinEnabled": { "type": "boolean" },
+        "pinCode": { "type": "string", "maxLength": 4 },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "partner1Email",
+        "partner2Email",
+        "allowedEmails",
+        "firstMetDate",
+        "firstTogetherDate",
+        "firstApartDate",
+        "reunitedDate",
+        "partner1Birthday",
+        "partner2Birthday",
+        "spaceTitle",
+        "pinEnabled",
+        "pinCode",
+        "updatedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PartnerProfile": {
+      "title": "PartnerProfile",
+      "description": "Bound identity, role, nickname, and compressed avatar for each partner.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["boy", "girl", "custom"], "maxLength": 16 },
+        "roleLabel": { "type": "string", "maxLength": 20 },
+        "nickname": { "type": "string", "maxLength": 30 },
+        "avatarDataUrl": { "type": "string", "maxLength": 200000 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "roleLabel", "nickname", "avatarDataUrl", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "Chalkboard": {
+      "title": "Chalkboard",
+      "description": "Personal interactive chalkboard supporting text+emoji and canvas chalk drawing.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "ownerEmail": { "type": "string", "maxLength": 120 },
+        "mode": { "type": "string", "enum": ["text", "draw"], "maxLength": 10 },
+        "textContent": { "type": "string", "maxLength": 600 },
+        "fontSize": { "type": "string", "enum": ["sm", "md", "lg"], "maxLength": 10 },
+        "chalkColor": { "type": "string", "enum": ["white", "pink", "blue", "yellow"], "maxLength": 20 },
+        "drawingDataUrl": { "type": "string", "maxLength": 350000 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "ownerEmail", "mode", "textContent", "fontSize", "chalkColor", "drawingDataUrl", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "Voucher": {
+      "title": "Voucher",
+      "description": "Custom wish voucher supporting QR scan and 4-digit PIN redemption.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "creatorUid": { "type": "string", "maxLength": 128 },
+        "creatorEmail": { "type": "string", "maxLength": 120 },
+        "creatorName": { "type": "string", "maxLength": 30 },
+        "recipientEmail": { "type": "string", "maxLength": 120 },
+        "title": { "type": "string", "maxLength": 60 },
+        "description": { "type": "string", "maxLength": 300 },
+        "expiresAt": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["active", "redeemed"], "maxLength": 16 },
+        "redeemCode": { "type": "string", "maxLength": 4 },
+        "qrToken": { "type": "string", "maxLength": 64 },
+        "redeemedAt": { "type": "string", "maxLength": 40 },
+        "redeemedMethod": { "type": "string", "enum": ["", "qr", "pin"], "maxLength": 10 },
+        "redeemedByUid": { "type": "string", "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "creatorUid",
+        "creatorEmail",
+        "creatorName",
+        "recipientEmail",
+        "title",
+        "description",
+        "expiresAt",
+        "status",
+        "redeemCode",
+        "qrToken",
+        "redeemedAt",
+        "redeemedMethod",
+        "redeemedByUid",
+        "allowedEmails",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WishlistItem": {
+      "title": "WishlistItem",
+      "description": "Shared bucket list item that fills the evolving liquid heart container.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 100 },
+        "note": { "type": "string", "maxLength": 240 },
+        "completed": { "type": "boolean" },
+        "completedAt": { "type": "string", "maxLength": 40 },
+        "creatorUid": { "type": "string", "maxLength": 128 },
+        "creatorName": { "type": "string", "maxLength": 30 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "note", "completed", "completedAt", "creatorUid", "creatorName", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "TimelineNode": {
+      "title": "TimelineNode",
+      "description": "Couple story timeline node with date, title, narrative, mood, and compressed photo.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "eventDate": { "type": "string", "maxLength": 20 },
+        "title": { "type": "string", "maxLength": 80 },
+        "story": { "type": "string", "maxLength": 1200 },
+        "mood": { "type": "string", "maxLength": 20 },
+        "photoDataUrl": { "type": "string", "maxLength": 450000 },
+        "creatorUid": { "type": "string", "maxLength": 128 },
+        "creatorName": { "type": "string", "maxLength": 30 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "eventDate", "title", "story", "mood", "photoDataUrl", "creatorUid", "creatorName", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "Polaroid": {
+      "title": "Polaroid",
+      "description": "3D flippable Polaroid photo card with front caption and back whisper/location.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "photoDataUrl": { "type": "string", "maxLength": 450000 },
+        "captionDate": { "type": "string", "maxLength": 30 },
+        "frontCaption": { "type": "string", "maxLength": 60 },
+        "backNote": { "type": "string", "maxLength": 400 },
+        "location": { "type": "string", "maxLength": 60 },
+        "tiltDeg": { "type": "number" },
+        "creatorUid": { "type": "string", "maxLength": 128 },
+        "creatorName": { "type": "string", "maxLength": 30 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "photoDataUrl", "captionDate", "frontCaption", "backNote", "location", "tiltDeg", "creatorUid", "creatorName", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "TimeCapsule": {
+      "title": "TimeCapsule",
+      "description": "Future-locked love letter unlocked only after unlockAtMs.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "senderUid": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 30 },
+        "recipientLabel": { "type": "string", "maxLength": 30 },
+        "title": { "type": "string", "maxLength": 80 },
+        "content": { "type": "string", "maxLength": 3000 },
+        "unlockAtIso": { "type": "string", "maxLength": 40 },
+        "unlockAtMs": { "type": "number" },
+        "opened": { "type": "boolean" },
+        "openedAtIso": { "type": "string", "maxLength": 40 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "senderUid", "senderName", "recipientLabel", "title", "content", "unlockAtIso", "unlockAtMs", "opened", "openedAtIso", "allowedEmails", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/coupleSpace/{spaceId}": {
+      "schema": { "$ref": "#/entities/CoupleSpace" },
+      "description": "Couple global configuration, dates, whitelist, and PIN lock."
+    },
+    "/partners/{partnerId}": {
+      "schema": { "$ref": "#/entities/PartnerProfile" },
+      "description": "Bound identity profiles for the two authorized partners."
+    },
+    "/chalkboards/{boardId}": {
+      "schema": { "$ref": "#/entities/Chalkboard" },
+      "description": "Individual live-synced chalkboards (one per partner UID)."
+    },
+    "/vouchers/{voucherId}": {
+      "schema": { "$ref": "#/entities/Voucher" },
+      "description": "Custom wish vouchers with QR and 4-digit PIN redemption."
+    },
+    "/wishlist/{itemId}": {
+      "schema": { "$ref": "#/entities/WishlistItem" },
+      "description": "Shared bucket list feeding the evolving liquid heart."
+    },
+    "/timeline/{nodeId}": {
+      "schema": { "$ref": "#/entities/TimelineNode" },
+      "description": "Vertical story timeline milestones."
+    },
+    "/polaroids/{photoId}": {
+      "schema": { "$ref": "#/entities/Polaroid" },
+      "description": "3D flippable Polaroid wall memories."
+    },
+    "/capsules/{capsuleId}": {
+      "schema": { "$ref": "#/entities/TimeCapsule" },
+      "description": "Time-locked future letters."
+    }
+  }
+}
