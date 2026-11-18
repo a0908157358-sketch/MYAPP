@@ -46,6 +46,7 @@ import {
   PartnerProfile,
   PolaroidPhoto,
   SharedMemo,
+  SnapStory,
   TimeCapsuleLetter,
   TimelineNode,
   WishlistItem,
@@ -132,6 +133,7 @@ function CoupleAppShell() {
   const [polaroids, setPolaroids] = useState<PolaroidPhoto[]>([]);
   const [capsules, setCapsules] = useState<TimeCapsuleLetter[]>([]);
   const [memos, setMemos] = useState<SharedMemo[]>([]);
+  const [snaps, setSnaps] = useState<SnapStory[]>([]);
 
   useEffect(() => {
     applyCustomPaletteToDocument(customPalette, colorMode);
@@ -269,6 +271,7 @@ function CoupleAppShell() {
     const unsubPolaroids = watchCollection<PolaroidPhoto>('polaroids', setPolaroids);
     const unsubCapsules = watchCollection<TimeCapsuleLetter>('capsules', setCapsules);
     const unsubMemos = watchCollection<SharedMemo>('memos', setMemos);
+    const unsubSnaps = watchCollection<SnapStory>('snaps', setSnaps);
 
     return () => {
       unsubSpace();
@@ -280,6 +283,7 @@ function CoupleAppShell() {
       unsubPolaroids();
       unsubCapsules();
       unsubMemos();
+      unsubSnaps();
     };
   }, [authReady, user]);
 
@@ -449,6 +453,7 @@ function CoupleAppShell() {
                 activeBoard={activeBoard}
                 otherBoard={otherBoard}
                 memos={memos}
+                snaps={snaps}
                 allowedEmails={currentAllowedEmails}
                 perspectiveMode={perspectiveMode}
                 onTogglePerspective={() =>
@@ -513,6 +518,7 @@ function CoupleAppShell() {
                   polaroids: polaroids.map((p) => p.id),
                   capsules: capsules.map((c) => c.id),
                   memos: memos.map((m) => m.id),
+                  snaps: snaps.map((s) => s.id),
                 }}
               />
             )}

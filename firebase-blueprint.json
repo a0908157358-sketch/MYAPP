@@ -164,6 +164,7 @@
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
         "photoDataUrl": { "type": "string", "maxLength": 450000 },
+        "photoDataUrls": { "type": "array", "description": "Up to 6 compressed Polaroid photos in this post." },
         "captionDate": { "type": "string", "maxLength": 30 },
         "frontCaption": { "type": "string", "maxLength": 60 },
         "backNote": { "type": "string", "maxLength": 400 },
@@ -213,6 +214,24 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "content", "completed", "creatorUid", "creatorName", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "SnapStory": {
+      "title": "SnapStory",
+      "description": "Ephemeral 24-hour IG-style couple snap photo with optional overlaid text.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "photoDataUrl": { "type": "string", "maxLength": 450000 },
+        "caption": { "type": "string", "maxLength": 80 },
+        "creatorUid": { "type": "string", "maxLength": 128 },
+        "creatorName": { "type": "string", "maxLength": 30 },
+        "createdAtMs": { "type": "number" },
+        "expiresAtMs": { "type": "number" },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "photoDataUrl", "caption", "creatorUid", "creatorName", "createdAtMs", "expiresAtMs", "allowedEmails", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -242,7 +261,7 @@
     },
     "/polaroids/{photoId}": {
       "schema": { "$ref": "#/entities/Polaroid" },
-      "description": "3D flippable Polaroid wall memories."
+      "description": "3D flippable Polaroid wall memories (single or multi-photo posts)."
     },
     "/capsules/{capsuleId}": {
       "schema": { "$ref": "#/entities/TimeCapsule" },
@@ -251,6 +270,10 @@
     "/memos/{memoId}": {
       "schema": { "$ref": "#/entities/SharedMemo" },
       "description": "Shared couple memo and daily todo list."
+    },
+    "/snaps/{snapId}": {
+      "schema": { "$ref": "#/entities/SnapStory" },
+      "description": "24-hour ephemeral IG-style quick snaps between both partners."
     }
   }
 }

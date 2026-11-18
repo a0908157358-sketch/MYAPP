@@ -1,9 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { deleteDoc, doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import {
   BookHeart,
   Camera,
+  ChevronLeft,
+  ChevronRight,
   Edit3,
   ImagePlus,
   MapPin,
@@ -17,9 +20,17 @@ import { PartnerProfile, PolaroidPhoto, TimelineNode } from '../types/couple';
 import { compressImageFile } from '../utils/imageCompression';
 
 const MOODS = ['心動瞬間', '暖心陪伴', '成長蛻變', '重逢悸動', '日常甜笑', '旅行記憶'];
+const MAX_POLAROID_PHOTOS = 6;
 
 function generateId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getPolaroidPhotos(pol: PolaroidPhoto): string[] {
+  if (Array.isArray(pol.photoDataUrls) && pol.photoDataUrls.length > 0) {
+    return pol.photoDataUrls;
+  }
+  return pol.photoDataUrl ? [pol.photoDataUrl] : [];
 }
 
 export const StoryAndPolaroidSection: React.FC<{
@@ -40,38 +51,98 @@ export const StoryAndPolaroidSection: React.FC<{
   const [storyPhoto, setStoryPhoto] = useState('');
   const [savingStory, setSavingStory] = useState(false);
 
-  // Polaroid state
+  // Polaroid wall state
   const [showAddPolaroid, setShowAddPolaroid] = useState(false);
   const [flippedIds, setFlippedIds] = useState<Record<string, boolean>>({});
-  const [editingBackId, setEditingBackId] = useState<string | null>(null);
-  const [editBackNote, setEditBackNote] = useState('');
-  const [editLocation, setEditLocation] = useState('');
+  const [slideIndices, setSlideIndices] = useState<Record<string, number>>({});
 
-  const [polPhoto, setPolPhoto] = useState('');
+  // Create Polaroid state (supports multi-photo up to 6)
+  const [polPhotos, setPolPhotos] = useState<string[]>([]);
   const [polDate, setPolDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [polFront, setPolFront] = useState('');
   const [polBack, setPolBack] = useState('');
   const [polLoc, setPolLoc] = useState('');
   const [savingPol, setSavingPol] = useState(false);
+
+  // Edit Polaroid Modal state
+  const [editingPol, setEditingPol] = useState<PolaroidPhoto | null>(null);
+  const [editPolPhotos, setEditPolPhotos] = useState<string[]>([]);
+  const [editPolDate, setEditPolDate] = useState('');
+  const [editPolFront, setEditPolFront] = useState('');
+  const [editPolLoc, setEditPolLoc] = useState('');
+  const [editPolBack, setEditPolBack] = useState('');
+  const [savingEditPol, setSavingEditPol] = useState(false);
+
   const [uploadError, setUploadError] = useState('');
+
+  // Touch swipe tracking so horizontal swipe on photos doesn't trigger card 3D flip
+  const touchStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const suppressNextFlipRef = useRef(false);
 
   const sortedTimeline = useMemo(
     () => [...timelineNodes].sort((a, b) => a.eventDate.localeCompare(b.eventDate)),
     [timelineNodes]
   );
 
-  const handlePhotoUpload = async (
-    file: File,
-    target: 'story' | 'polaroid'
-  ) => {
+  const handleStoryPhotoUpload = async (file: File) => {
     setUploadError('');
     try {
       const compressed = await compressImageFile(file, {
         maxDim: 880,
         maxDataUrlLength: 360_000,
       });
-      if (target === 'story') setStoryPhoto(compressed);
-      else setPolPhoto(compressed);
+      setStoryPhoto(compressed);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : '圖片壓縮失敗');
+    }
+  };
+
+  const compressBatchForPolaroid = async (
+    files: File[],
+    existingPhotos: string[]
+  ): Promise<string[]> => {
+    const remainingSlots = Math.max(0, MAX_POLAROID_PHOTOS - existingPhotos.length);
+    const chosen = files.slice(0, remainingSlots);
+    if (chosen.length === 0) {
+      throw new Error(`每張拍立得最多可上傳 ${MAX_POLAROID_PHOTOS} 張照片`);
+    }
+
+    const totalCount = existingPhotos.length + chosen.length;
+    const existingBytes = existingPhotos.reduce((acc, s) => acc + s.length, 0);
+    // Keep entire Firestore document safely below 1MB (~640KB for images combined)
+    const remainingBudget = Math.max(90_000 * chosen.length, 640_000 - existingBytes);
+    const perPhotoMaxLen = Math.min(
+      340_000,
+      Math.max(85_000, Math.floor(remainingBudget / chosen.length))
+    );
+    const maxDim = totalCount > 2 ? 720 : 880;
+
+    const results: string[] = [];
+    for (const file of chosen) {
+      const compressed = await compressImageFile(file, {
+        maxDim,
+        maxDataUrlLength: perPhotoMaxLen,
+      });
+      results.push(compressed);
+    }
+    return results;
+  };
+
+  const handlePolaroidFilesSelect = async (
+    fileList: FileList | null,
+    mode: 'create' | 'edit'
+  ) => {
+    if (!fileList || fileList.length === 0) return;
+    setUploadError('');
+    const files = Array.from(fileList);
+    try {
+      if (mode === 'create') {
+        const added = await compressBatchForPolaroid(files, polPhotos);
+        setPolPhotos((prev) => [...prev, ...added].slice(0, MAX_POLAROID_PHOTOS));
+      } else {
+        const added = await compressBatchForPolaroid(files, editPolPhotos);
+        setEditPolPhotos((prev) => [...prev, ...added].slice(0, MAX_POLAROID_PHOTOS));
+      }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : '圖片壓縮失敗');
     }
@@ -109,14 +180,16 @@ export const StoryAndPolaroidSection: React.FC<{
 
   const handleCreatePolaroid = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!polPhoto || !polFront.trim()) return;
+    if (polPhotos.length === 0 || !polFront.trim()) return;
     setSavingPol(true);
+    setUploadError('');
     const id = generateId('pol');
-    const tiltDeg = Number(((Math.random() - 0.5) * 7).toFixed(1));
+    const tiltDeg = Number(((Math.random() - 0.5) * 6).toFixed(1));
     try {
       await setDoc(doc(db, 'polaroids', id), {
         id,
-        photoDataUrl: polPhoto,
+        photoDataUrl: polPhotos[0],
+        photoDataUrls: polPhotos,
         captionDate: polDate,
         frontCaption: polFront.trim().slice(0, 60),
         backNote: polBack.trim().slice(0, 400),
@@ -128,7 +201,7 @@ export const StoryAndPolaroidSection: React.FC<{
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      setPolPhoto('');
+      setPolPhotos([]);
       setPolFront('');
       setPolBack('');
       setPolLoc('');
@@ -140,17 +213,50 @@ export const StoryAndPolaroidSection: React.FC<{
     }
   };
 
-  const handleSaveBackNote = async (pol: PolaroidPhoto) => {
+  const openEditPolaroidModal = (pol: PolaroidPhoto) => {
+    setUploadError('');
+    setEditingPol(pol);
+    setEditPolPhotos(getPolaroidPhotos(pol));
+    setEditPolDate(pol.captionDate || new Date().toISOString().slice(0, 10));
+    setEditPolFront(pol.frontCaption || '');
+    setEditPolLoc(pol.location || '');
+    setEditPolBack(pol.backNote || '');
+  };
+
+  const handleSaveEditPolaroid = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPol || editPolPhotos.length === 0 || !editPolFront.trim()) return;
+    setSavingEditPol(true);
+    setUploadError('');
     try {
-      await updateDoc(doc(db, 'polaroids', pol.id), {
-        backNote: editBackNote.trim().slice(0, 400),
-        location: editLocation.trim().slice(0, 60),
+      await updateDoc(doc(db, 'polaroids', editingPol.id), {
+        photoDataUrl: editPolPhotos[0],
+        photoDataUrls: editPolPhotos,
+        captionDate: editPolDate.trim().slice(0, 30) || editingPol.captionDate,
+        frontCaption: editPolFront.trim().slice(0, 60),
+        location: editPolLoc.trim().slice(0, 60),
+        backNote: editPolBack.trim().slice(0, 400),
         updatedAt: serverTimestamp(),
       });
-      setEditingBackId(null);
+      setSlideIndices((prev) => ({
+        ...prev,
+        [editingPol.id]: Math.min(prev[editingPol.id] || 0, editPolPhotos.length - 1),
+      }));
+      setEditingPol(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `polaroids/${pol.id}`);
+      handleFirestoreError(error, OperationType.UPDATE, `polaroids/${editingPol.id}`);
+    } finally {
+      setSavingEditPol(false);
     }
+  };
+
+  const stepCardPhoto = (polId: string, total: number, delta: number) => {
+    if (total <= 1) return;
+    setSlideIndices((prev) => {
+      const current = prev[polId] || 0;
+      const next = (current + delta + total) % total;
+      return { ...prev, [polId]: next };
+    });
   };
 
   return (
@@ -186,9 +292,11 @@ export const StoryAndPolaroidSection: React.FC<{
 
         <button
           type="button"
-          onClick={() =>
-            viewMode === 'timeline' ? setShowAddStory(true) : setShowAddPolaroid(true)
-          }
+          onClick={() => {
+            setUploadError('');
+            if (viewMode === 'timeline') setShowAddStory(true);
+            else setShowAddPolaroid(true);
+          }}
           className="min-h-[44px] px-4 py-2.5 rounded-2xl text-sm font-semibold text-white shadow-sm inline-flex items-center justify-center gap-2 transition active:scale-[0.98] whitespace-nowrap shrink-0"
           style={{ backgroundColor: 'var(--accent-500)' }}
         >
@@ -232,7 +340,6 @@ export const StoryAndPolaroidSection: React.FC<{
                         isRight ? 'md:justify-end' : 'md:justify-start'
                       }`}
                     >
-                      {/* 節點發光圓點 */}
                       <div
                         className="absolute -left-[19px] md:left-1/2 md:-translate-x-1/2 top-6 h-3.5 w-3.5 rounded-full border-2 border-white dark:border-slate-900 shadow"
                         style={{ backgroundColor: 'var(--accent-500)' }}
@@ -284,7 +391,7 @@ export const StoryAndPolaroidSection: React.FC<{
         </section>
       )}
 
-      {/* 2. 專屬拍立得相簿牆（3D 翻轉互動） */}
+      {/* 2. 升級版專屬拍立得相簿牆（1:1 比例不裁切 + 多張輪播滑動 + 完整編輯） */}
       {viewMode === 'polaroid' && (
         <section>
           {polaroids.length === 0 ? (
@@ -292,19 +399,21 @@ export const StoryAndPolaroidSection: React.FC<{
               <Camera className="h-10 w-10 mx-auto text-[var(--text-muted)] mb-3" />
               <p className="text-sm font-semibold">拍立得牆目前還是空的</p>
               <p className="mt-1 text-xs text-[var(--text-muted)]">
-                上傳一張合照，點擊相片可 3D 翻面寫下悄悄話與地點
+                可一次上傳多張 1:1 完整相片不裁切，點擊相片可 3D 翻面寫下悄悄話，並隨時編輯內容
               </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 py-2">
               {polaroids.map((pol) => {
+                const photos = getPolaroidPhotos(pol);
+                const activeIdx = Math.min(slideIndices[pol.id] || 0, Math.max(0, photos.length - 1));
+                const currentPhoto = photos[activeIdx] || pol.photoDataUrl;
                 const isFlipped = !!flippedIds[pol.id];
-                const isEditingBack = editingBackId === pol.id;
 
                 return (
                   <div
                     key={pol.id}
-                    className="perspective-1000 h-[360px] transition-transform duration-300 hover:rotate-0"
+                    className="perspective-1000 h-[445px] sm:h-[430px] transition-transform duration-300 hover:rotate-0"
                     style={{ transform: `rotate(${pol.tiltDeg}deg)` }}
                   >
                     <div
@@ -312,58 +421,160 @@ export const StoryAndPolaroidSection: React.FC<{
                         isFlipped ? 'rotate-y-180' : ''
                       }`}
                       onClick={() => {
-                        if (isEditingBack) return;
+                        if (suppressNextFlipRef.current) {
+                          suppressNextFlipRef.current = false;
+                          return;
+                        }
                         setFlippedIds((prev) => ({
                           ...prev,
                           [pol.id]: !prev[pol.id],
                         }));
                       }}
                     >
-                      {/* 正面：拍立得相紙與手寫感標題 */}
-                      <div className="absolute inset-0 backface-hidden rounded-2xl bg-[#FCFCFA] dark:bg-slate-100 text-slate-900 p-3.5 pb-5 shadow-xl border border-black/10 flex flex-col justify-between">
-                        <div className="w-full h-[250px] rounded-lg overflow-hidden bg-slate-200 relative">
+                      {/* 正面：1:1 正方形完整相片（object-contain 絕不裁切）+ 輪播 + 手寫標題 + 編輯鈕 */}
+                      <div className="absolute inset-0 backface-hidden rounded-2xl bg-[#FCFCFA] dark:bg-slate-100 text-slate-900 p-3.5 pb-4 shadow-xl border border-black/10 flex flex-col justify-between">
+                        <div
+                          className="w-full aspect-square shrink-0 rounded-lg overflow-hidden bg-[#EFEAE2] relative flex items-center justify-center touch-pan-y"
+                          onTouchStart={(e) => {
+                            if (photos.length <= 1) return;
+                            const touch = e.touches[0];
+                            touchStartRef.current = {
+                              id: pol.id,
+                              x: touch.clientX,
+                              y: touch.clientY,
+                            };
+                          }}
+                          onTouchEnd={(e) => {
+                            const start = touchStartRef.current;
+                            touchStartRef.current = null;
+                            if (!start || start.id !== pol.id || photos.length <= 1) return;
+                            const touch = e.changedTouches[0];
+                            const dx = touch.clientX - start.x;
+                            const dy = touch.clientY - start.y;
+                            if (Math.abs(dx) > 35 && Math.abs(dx) > Math.abs(dy)) {
+                              suppressNextFlipRef.current = true;
+                              stepCardPhoto(pol.id, photos.length, dx < 0 ? 1 : -1);
+                            }
+                          }}
+                        >
                           <img
-                            src={pol.photoDataUrl}
-                            alt={pol.frontCaption}
+                            src={currentPhoto}
+                            alt={`${pol.frontCaption} (${activeIdx + 1}/${photos.length})`}
                             referrerPolicy="no-referrer"
-                            className="w-full h-full object-cover"
+                            className="w-full h-full object-contain select-none"
                           />
+
+                          {/* 多張照片張數標記 & 切換按鈕 */}
+                          {photos.length > 1 && (
+                            <>
+                              <span
+                                onClick={(e) => e.stopPropagation()}
+                                className="absolute top-2 right-2 rounded-full bg-black/55 backdrop-blur-sm px-2 py-0.5 text-[10px] font-mono-tabular font-semibold text-white"
+                              >
+                                {activeIdx + 1} / {photos.length}
+                              </span>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  stepCardPhoto(pol.id, photos.length, -1);
+                                }}
+                                aria-label="上一張照片"
+                                className="absolute left-1.5 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full bg-black/45 hover:bg-black/65 text-white flex items-center justify-center transition active:scale-95 touch-manipulation"
+                              >
+                                <ChevronLeft className="h-4 w-4" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  stepCardPhoto(pol.id, photos.length, 1);
+                                }}
+                                aria-label="下一張照片"
+                                className="absolute right-1.5 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full bg-black/45 hover:bg-black/65 text-white flex items-center justify-center transition active:scale-95 touch-manipulation"
+                              >
+                                <ChevronRight className="h-4 w-4" />
+                              </button>
+
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                className="absolute bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full bg-black/40 px-2 py-1 backdrop-blur-sm"
+                              >
+                                {photos.map((_, idx) => (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() =>
+                                      setSlideIndices((prev) => ({ ...prev, [pol.id]: idx }))
+                                    }
+                                    aria-label={`跳至第 ${idx + 1} 張`}
+                                    className={`h-1.5 rounded-full transition-all ${
+                                      idx === activeIdx ? 'w-3.5 bg-white' : 'w-1.5 bg-white/50'
+                                    }`}
+                                  />
+                                ))}
+                              </div>
+                            </>
+                          )}
                         </div>
-                        <div className="pt-3 px-1 flex items-end justify-between gap-2">
-                          <div className="min-w-0">
+
+                        <div className="pt-2.5 px-1 flex items-end justify-between gap-2">
+                          <div className="min-w-0 flex-1">
                             <p className="font-serif-editorial text-xs text-slate-500">
                               {pol.captionDate}
+                              {pol.location ? ` · ${pol.location}` : ''}
                             </p>
                             <p className="text-sm font-semibold text-slate-800 truncate">
                               {pol.frontCaption}
                             </p>
                           </div>
-                          <span className="text-[11px] text-slate-400 inline-flex items-center gap-1 shrink-0">
-                            <RotateCw className="h-3 w-3" />
-                            翻面
-                          </span>
+
+                          <div
+                            className="flex items-center gap-1.5 shrink-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => openEditPolaroidModal(pol)}
+                              aria-label="編輯拍立得"
+                              className="min-h-[30px] px-2.5 py-1 rounded-lg bg-slate-900/10 hover:bg-slate-900/15 text-slate-700 text-[11px] font-semibold inline-flex items-center gap-1 transition active:scale-95 touch-manipulation"
+                            >
+                              <Edit3 className="h-3 w-3" />
+                              編輯
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFlippedIds((prev) => ({ ...prev, [pol.id]: !prev[pol.id] }))
+                              }
+                              aria-label="翻面查看悄悄話"
+                              className="min-h-[30px] px-2 py-1 rounded-lg text-[11px] text-slate-500 hover:bg-slate-900/5 inline-flex items-center gap-1 touch-manipulation"
+                            >
+                              <RotateCw className="h-3 w-3" />
+                              翻面
+                            </button>
+                          </div>
                         </div>
                       </div>
 
                       {/* 背面：悄悄話與拍攝地點 */}
                       <div className="absolute inset-0 backface-hidden rotate-y-180 rounded-2xl bg-[#F6F3EC] dark:bg-slate-800 text-[var(--text-primary)] p-5 shadow-xl border border-[var(--border-glass)] flex flex-col justify-between">
                         <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
-                            <MapPin className="h-3.5 w-3.5" />
-                            <span>{pol.location || '未填寫地點'}</span>
+                          <div className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] min-w-0">
+                            <MapPin className="h-3.5 w-3.5 shrink-0" />
+                            <span className="truncate">{pol.location || '未填寫地點'}</span>
                           </div>
-                          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"
-                              onClick={() => {
-                                setEditingBackId(pol.id);
-                                setEditBackNote(pol.backNote);
-                                setEditLocation(pol.location);
-                              }}
-                              aria-label="編輯背面悄悄話"
-                              className="min-h-[36px] min-w-[36px] rounded-xl hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center"
+                              onClick={() => openEditPolaroidModal(pol)}
+                              aria-label="編輯拍立得貼文"
+                              className="min-h-[34px] px-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 text-xs font-medium inline-flex items-center gap-1 touch-manipulation"
                             >
-                              <Edit3 className="h-4 w-4" />
+                              <Edit3 className="h-3.5 w-3.5" />
+                              編輯
                             </button>
                             <button
                               type="button"
@@ -375,59 +586,18 @@ export const StoryAndPolaroidSection: React.FC<{
                                 }
                               }}
                               aria-label="刪除拍立得"
-                              className="min-h-[36px] min-w-[36px] rounded-xl text-rose-500 hover:bg-rose-500/10 flex items-center justify-center"
+                              className="min-h-[34px] min-w-[34px] rounded-xl text-rose-500 hover:bg-rose-500/10 flex items-center justify-center touch-manipulation"
                             >
                               <Trash2 className="h-4 w-4" />
                             </button>
                           </div>
                         </div>
 
-                        {isEditingBack ? (
-                          <div
-                            className="flex-1 flex flex-col justify-center gap-2.5 my-2"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <input
-                              type="text"
-                              maxLength={60}
-                              value={editLocation}
-                              onChange={(e) => setEditLocation(e.target.value)}
-                              placeholder="拍攝地點（例如：淡水漁人碼頭）"
-                              className="w-full rounded-xl border border-[var(--border-glass)] bg-white/70 dark:bg-slate-900/70 px-3 py-2 text-xs outline-none"
-                            />
-                            <textarea
-                              rows={4}
-                              maxLength={400}
-                              value={editBackNote}
-                              onChange={(e) => setEditBackNote(e.target.value)}
-                              placeholder="寫下想留在相片背面的悄悄話..."
-                              className="w-full rounded-xl border border-[var(--border-glass)] bg-white/70 dark:bg-slate-900/70 px-3 py-2 text-xs outline-none resize-none"
-                            />
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => setEditingBackId(null)}
-                                className="flex-1 min-h-[38px] rounded-xl glass-card text-xs font-medium"
-                              >
-                                取消
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleSaveBackNote(pol)}
-                                className="flex-1 min-h-[38px] rounded-xl text-xs font-semibold text-white"
-                                style={{ backgroundColor: 'var(--accent-500)' }}
-                              >
-                                儲存背面文字
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex-1 flex items-center justify-center px-2">
-                            <p className="text-sm leading-relaxed text-center whitespace-pre-wrap break-words">
-                              {pol.backNote || '（點擊右上角編輯筆，留下給另一半的背面悄悄話）'}
-                            </p>
-                          </div>
-                        )}
+                        <div className="flex-1 flex items-center justify-center px-2 overflow-y-auto my-2">
+                          <p className="text-sm leading-relaxed text-center whitespace-pre-wrap break-words">
+                            {pol.backNote || '（點擊「編輯」按鈕，留下給另一半的背面悄悄話）'}
+                          </p>
+                        </div>
 
                         <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)] pt-2 border-t border-[var(--border-glass)]">
                           <span>拍攝者：{pol.creatorName}</span>
@@ -444,310 +614,532 @@ export const StoryAndPolaroidSection: React.FC<{
       )}
 
       {/* 展開故事細節 Modal */}
-      <AnimatePresence>
-        {expandedNode && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm p-4">
-            <motion.div
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 14 }}
-              className="glass-card-strong w-full max-w-lg max-h-[88vh] overflow-y-auto rounded-3xl p-6 shadow-2xl space-y-4"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs text-[var(--text-muted)] font-mono-tabular">
-                    {expandedNode.eventDate} · {expandedNode.mood} · {expandedNode.creatorName}
-                  </p>
-                  <h3 className="mt-1 text-xl font-bold">{expandedNode.title}</h3>
-                </div>
-                <button
-                  type="button"
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {expandedNode && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 pointer-events-auto">
+                <div
                   onClick={() => setExpandedNode(null)}
-                  className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center text-[var(--text-muted)]"
+                  className="absolute inset-0 bg-black/55 backdrop-blur-sm"
+                  aria-hidden="true"
+                />
+                <motion.div
+                  initial={{ opacity: 0, y: 14 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 14 }}
+                  className="relative z-10 glass-card-strong w-full max-w-lg max-h-[88vh] overflow-y-auto rounded-3xl p-6 shadow-2xl space-y-4 pointer-events-auto"
                 >
-                  <X className="h-5 w-5" />
-                </button>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs text-[var(--text-muted)] font-mono-tabular">
+                        {expandedNode.eventDate} · {expandedNode.mood} · {expandedNode.creatorName}
+                      </p>
+                      <h3 className="mt-1 text-xl font-bold">{expandedNode.title}</h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedNode(null)}
+                      className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center text-[var(--text-muted)]"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  {expandedNode.photoDataUrl && (
+                    <div className="rounded-2xl overflow-hidden bg-black/10">
+                      <img
+                        src={expandedNode.photoDataUrl}
+                        alt={expandedNode.title}
+                        referrerPolicy="no-referrer"
+                        className="w-full max-h-[340px] object-contain mx-auto"
+                      />
+                    </div>
+                  )}
+
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap break-words text-[var(--text-secondary)]">
+                    {expandedNode.story}
+                  </p>
+
+                  <div className="pt-3 border-t border-[var(--border-glass)] flex justify-end">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const targetId = expandedNode.id;
+                        setExpandedNode(null);
+                        try {
+                          await deleteDoc(doc(db, 'timeline', targetId));
+                        } catch (err) {
+                          handleFirestoreError(err, OperationType.DELETE, `timeline/${targetId}`);
+                        }
+                      }}
+                      className="min-h-[40px] px-4 rounded-xl text-xs font-medium text-rose-500 hover:bg-rose-500/10 inline-flex items-center gap-1.5"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      刪除此回憶節點
+                    </button>
+                  </div>
+                </motion.div>
               </div>
-
-              {expandedNode.photoDataUrl && (
-                <div className="rounded-2xl overflow-hidden">
-                  <img
-                    src={expandedNode.photoDataUrl}
-                    alt={expandedNode.title}
-                    referrerPolicy="no-referrer"
-                    className="w-full max-h-[340px] object-cover"
-                  />
-                </div>
-              )}
-
-              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words text-[var(--text-secondary)]">
-                {expandedNode.story}
-              </p>
-
-              <div className="pt-3 border-t border-[var(--border-glass)] flex justify-end">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const targetId = expandedNode.id;
-                    setExpandedNode(null);
-                    try {
-                      await deleteDoc(doc(db, 'timeline', targetId));
-                    } catch (err) {
-                      handleFirestoreError(err, OperationType.DELETE, `timeline/${targetId}`);
-                    }
-                  }}
-                  className="min-h-[40px] px-4 rounded-xl text-xs font-medium text-rose-500 hover:bg-rose-500/10 inline-flex items-center gap-1.5"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  刪除此回憶節點
-                </button>
-              </div>
-            </motion.div>
-          </div>
+            )}
+          </AnimatePresence>,
+          document.body
         )}
-      </AnimatePresence>
 
       {/* 新增故事節點 Modal */}
-      <AnimatePresence>
-        {showAddStory && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-            <motion.form
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 16 }}
-              onSubmit={handleCreateStory}
-              className="glass-card-strong w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl p-6 shadow-2xl space-y-4"
-            >
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold">新增故事時間軸節點</h3>
-                <button
-                  type="button"
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {showAddStory && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 pointer-events-auto">
+                <div
                   onClick={() => setShowAddStory(false)}
-                  className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center"
+                  className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+                  aria-hidden="true"
+                />
+                <motion.form
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 16 }}
+                  onSubmit={handleCreateStory}
+                  className="relative z-10 glass-card-strong w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl p-6 shadow-2xl space-y-4 pointer-events-auto"
                 >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-bold">新增故事時間軸節點</h3>
+                    <button
+                      type="button"
+                      onClick={() => setShowAddStory(false)}
+                      className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                    發生日期
-                  </label>
-                  <input
-                    type="date"
-                    required
-                    value={storyDate}
-                    onChange={(e) => setStoryDate(e.target.value)}
-                    className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-sm font-mono-tabular outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                    心情標籤
-                  </label>
-                  <select
-                    value={storyMood}
-                    onChange={(e) => setStoryMood(e.target.value)}
-                    className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-sm outline-none"
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                        發生日期
+                      </label>
+                      <input
+                        type="date"
+                        required
+                        value={storyDate}
+                        onChange={(e) => setStoryDate(e.target.value)}
+                        className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-base sm:text-sm font-mono-tabular outline-none pointer-events-auto select-text touch-manipulation"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                        心情標籤
+                      </label>
+                      <select
+                        value={storyMood}
+                        onChange={(e) => setStoryMood(e.target.value)}
+                        className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-base sm:text-sm outline-none pointer-events-auto touch-manipulation"
+                      >
+                        {MOODS.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      節點標題
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={80}
+                      value={storyTitle}
+                      onChange={(e) => setStoryTitle(e.target.value)}
+                      placeholder="例如：我們重新牽起手的夜晚"
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-base sm:text-sm outline-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      故事短文
+                    </label>
+                    <textarea
+                      rows={4}
+                      required
+                      maxLength={1200}
+                      value={storyBody}
+                      onChange={(e) => setStoryBody(e.target.value)}
+                      placeholder="記錄當時的對話、細節與心境..."
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-base sm:text-sm outline-none resize-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      附加一張照片（選填，將自動壓縮）
+                    </label>
+                    <label className="min-h-[48px] rounded-2xl border border-dashed border-[var(--border-glass)] flex items-center justify-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer hover:bg-white/40 dark:hover:bg-slate-800/40 transition p-3">
+                      <ImagePlus className="h-4 w-4" />
+                      <span>{storyPhoto ? '已選擇照片（點擊更換）' : '從相簿選取照片'}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          e.target.value = '';
+                          if (f) handleStoryPhotoUpload(f);
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                    {storyPhoto && (
+                      <img
+                        src={storyPhoto}
+                        alt="預覽"
+                        className="mt-2 h-28 w-full object-contain bg-black/5 rounded-2xl"
+                      />
+                    )}
+                  </div>
+
+                  {uploadError && <p className="text-xs text-rose-500">{uploadError}</p>}
+
+                  <button
+                    type="submit"
+                    disabled={savingStory}
+                    className="w-full min-h-[48px] rounded-2xl text-sm font-semibold text-white shadow transition active:scale-[0.98]"
+                    style={{ backgroundColor: 'var(--accent-500)' }}
                   >
-                    {MOODS.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                    {savingStory ? '儲存中...' : '保存故事節點'}
+                  </button>
+                </motion.form>
               </div>
-
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                  節點標題
-                </label>
-                <input
-                  type="text"
-                  required
-                  maxLength={80}
-                  value={storyTitle}
-                  onChange={(e) => setStoryTitle(e.target.value)}
-                  placeholder="例如：我們重新牽起手的夜晚"
-                  className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-sm outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                  故事短文
-                </label>
-                <textarea
-                  rows={4}
-                  required
-                  maxLength={1200}
-                  value={storyBody}
-                  onChange={(e) => setStoryBody(e.target.value)}
-                  placeholder="記錄當時的對話、細節與心境..."
-                  className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-sm outline-none resize-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                  附加一張照片（選填，將自動壓縮）
-                </label>
-                <label className="min-h-[48px] rounded-2xl border border-dashed border-[var(--border-glass)] flex items-center justify-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer hover:bg-white/40 dark:hover:bg-slate-800/40 transition p-3">
-                  <ImagePlus className="h-4 w-4" />
-                  <span>{storyPhoto ? '已選擇照片（點擊更換）' : '從相簿選取照片'}</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) handlePhotoUpload(f, 'story');
-                    }}
-                    className="hidden"
-                  />
-                </label>
-                {storyPhoto && (
-                  <img
-                    src={storyPhoto}
-                    alt="預覽"
-                    className="mt-2 h-28 w-full object-cover rounded-2xl"
-                  />
-                )}
-              </div>
-
-              {uploadError && <p className="text-xs text-rose-500">{uploadError}</p>}
-
-              <button
-                type="submit"
-                disabled={savingStory}
-                className="w-full min-h-[48px] rounded-2xl text-sm font-semibold text-white shadow transition active:scale-[0.98]"
-                style={{ backgroundColor: 'var(--accent-500)' }}
-              >
-                {savingStory ? '儲存中...' : '保存故事節點'}
-              </button>
-            </motion.form>
-          </div>
+            )}
+          </AnimatePresence>,
+          document.body
         )}
-      </AnimatePresence>
 
-      {/* 新增拍立得 Modal */}
-      <AnimatePresence>
-        {showAddPolaroid && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-            <motion.form
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 16 }}
-              onSubmit={handleCreatePolaroid}
-              className="glass-card-strong w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl p-6 shadow-2xl space-y-4"
-            >
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold">上傳專屬拍立得</h3>
-                <button
-                  type="button"
+      {/* 新增拍立得 Modal（支援多張上傳 ＋ 1:1 完整不裁切預覽） */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {showAddPolaroid && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 pointer-events-auto">
+                <div
                   onClick={() => setShowAddPolaroid(false)}
-                  className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center"
+                  className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+                  aria-hidden="true"
+                />
+                <motion.form
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 16 }}
+                  onSubmit={handleCreatePolaroid}
+                  className="relative z-10 glass-card-strong w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl p-6 shadow-2xl space-y-4 pointer-events-auto"
                 >
-                  <X className="h-5 w-5" />
-                </button>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold">上傳專屬拍立得</h3>
+                      <p className="text-[11px] text-[var(--text-muted)]">
+                        支援一次選取多張（最多 {MAX_POLAROID_PHOTOS} 張），1:1 完整顯示不裁切
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAddPolaroid(false)}
+                      className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  {/* 1:1 多張預覽網格與加入按鈕 */}
+                  {polPhotos.length > 0 && (
+                    <div className="grid grid-cols-3 gap-2.5">
+                      {polPhotos.map((src, idx) => (
+                        <div
+                          key={idx}
+                          className="relative aspect-square rounded-xl overflow-hidden bg-[#EFEAE2] border border-[var(--border-glass)] flex items-center justify-center"
+                        >
+                          <img
+                            src={src}
+                            alt={`拍立得預覽 ${idx + 1}`}
+                            className="w-full h-full object-contain"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPolPhotos((prev) => prev.filter((_, i) => i !== idx))
+                            }
+                            aria-label={`移除第 ${idx + 1} 張`}
+                            className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/65 text-white flex items-center justify-center hover:bg-rose-500 transition"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {polPhotos.length < MAX_POLAROID_PHOTOS && (
+                    <label className="min-h-[92px] rounded-2xl border border-dashed border-[var(--border-glass)] flex flex-col items-center justify-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer hover:bg-white/40 dark:hover:bg-slate-800/40 transition p-4">
+                      <ImagePlus className="h-6 w-6" />
+                      <span>
+                        {polPhotos.length > 0
+                          ? `再加入照片（已選 ${polPhotos.length}/${MAX_POLAROID_PHOTOS} 張）`
+                          : `點擊選擇相片（可複選最多 ${MAX_POLAROID_PHOTOS} 張）`}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        onChange={(e) => {
+                          handlePolaroidFilesSelect(e.target.files, 'create');
+                          e.target.value = '';
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                        拍攝日期
+                      </label>
+                      <input
+                        type="date"
+                        required
+                        value={polDate}
+                        onChange={(e) => setPolDate(e.target.value)}
+                        className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-base sm:text-sm font-mono-tabular outline-none pointer-events-auto select-text touch-manipulation"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                        拍攝地點
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={60}
+                        value={polLoc}
+                        onChange={(e) => setPolLoc(e.target.value)}
+                        placeholder="例如：陽明山夜景"
+                        className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-base sm:text-sm outline-none pointer-events-auto select-text touch-manipulation"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      正面手寫標題
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={60}
+                      value={polFront}
+                      onChange={(e) => setPolFront(e.target.value)}
+                      placeholder="寫在拍立得下方的短句"
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-base sm:text-sm outline-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      背面悄悄話（翻面後可見）
+                    </label>
+                    <textarea
+                      rows={3}
+                      maxLength={400}
+                      value={polBack}
+                      onChange={(e) => setPolBack(e.target.value)}
+                      placeholder="寫給對方的秘密留言..."
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-base sm:text-sm outline-none resize-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
+
+                  {uploadError && <p className="text-xs text-rose-500">{uploadError}</p>}
+
+                  <button
+                    type="submit"
+                    disabled={savingPol || polPhotos.length === 0}
+                    className="w-full min-h-[48px] rounded-2xl text-sm font-semibold text-white shadow transition active:scale-[0.98] disabled:opacity-50"
+                    style={{ backgroundColor: 'var(--accent-500)' }}
+                  >
+                    {savingPol ? '沖印同步中...' : '貼上拍立得相簿牆'}
+                  </button>
+                </motion.form>
               </div>
-
-              <label className="min-h-[120px] rounded-2xl border border-dashed border-[var(--border-glass)] flex flex-col items-center justify-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer hover:bg-white/40 dark:hover:bg-slate-800/40 transition p-4">
-                {polPhoto ? (
-                  <img
-                    src={polPhoto}
-                    alt="拍立得預覽"
-                    className="h-40 w-full object-cover rounded-xl"
-                  />
-                ) : (
-                  <>
-                    <ImagePlus className="h-6 w-6" />
-                    <span>點擊選擇相片（自動壓縮並套用拍立得邊框）</span>
-                  </>
-                )}
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) handlePhotoUpload(f, 'polaroid');
-                  }}
-                  className="hidden"
-                />
-              </label>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                    拍攝日期
-                  </label>
-                  <input
-                    type="date"
-                    required
-                    value={polDate}
-                    onChange={(e) => setPolDate(e.target.value)}
-                    className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-sm font-mono-tabular outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                    拍攝地點
-                  </label>
-                  <input
-                    type="text"
-                    maxLength={60}
-                    value={polLoc}
-                    onChange={(e) => setPolLoc(e.target.value)}
-                    placeholder="例如：陽明山夜景"
-                    className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-sm outline-none"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                  正面手寫標題
-                </label>
-                <input
-                  type="text"
-                  required
-                  maxLength={60}
-                  value={polFront}
-                  onChange={(e) => setPolFront(e.target.value)}
-                  placeholder="寫在拍立得下方的短句"
-                  className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-sm outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                  背面悄悄話（翻面後可見）
-                </label>
-                <textarea
-                  rows={3}
-                  maxLength={400}
-                  value={polBack}
-                  onChange={(e) => setPolBack(e.target.value)}
-                  placeholder="寫給對方的秘密留言..."
-                  className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-sm outline-none resize-none"
-                />
-              </div>
-
-              {uploadError && <p className="text-xs text-rose-500">{uploadError}</p>}
-
-              <button
-                type="submit"
-                disabled={savingPol || !polPhoto}
-                className="w-full min-h-[48px] rounded-2xl text-sm font-semibold text-white shadow transition active:scale-[0.98] disabled:opacity-50"
-                style={{ backgroundColor: 'var(--accent-500)' }}
-              >
-                {savingPol ? '沖印同步中...' : '貼上拍立得相簿牆'}
-              </button>
-            </motion.form>
-          </div>
+            )}
+          </AnimatePresence>,
+          document.body
         )}
-      </AnimatePresence>
+
+      {/* 編輯拍立得貼文 Modal（標題、日期、地點、悄悄話、增刪多張照片） */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {editingPol && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 pointer-events-auto">
+                <div
+                  onClick={() => setEditingPol(null)}
+                  className="absolute inset-0 bg-black/55 backdrop-blur-sm"
+                  aria-hidden="true"
+                />
+                <motion.form
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 16 }}
+                  onSubmit={handleSaveEditPolaroid}
+                  className="relative z-10 glass-card-strong w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl p-6 shadow-2xl space-y-4 pointer-events-auto"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold">編輯拍立得內容</h3>
+                      <p className="text-[11px] text-[var(--text-muted)]">
+                        可調整標題、日期、地點、悄悄話或增減照片（1:1 完整顯示）
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEditingPol(null)}
+                      className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  {/* 編輯照片清單 */}
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-3 gap-2.5">
+                      {editPolPhotos.map((src, idx) => (
+                        <div
+                          key={idx}
+                          className="relative aspect-square rounded-xl overflow-hidden bg-[#EFEAE2] border border-[var(--border-glass)] flex items-center justify-center"
+                        >
+                          <img
+                            src={src}
+                            alt={`相片 ${idx + 1}`}
+                            className="w-full h-full object-contain"
+                          />
+                          {editPolPhotos.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditPolPhotos((prev) => prev.filter((_, i) => i !== idx))
+                              }
+                              aria-label={`刪除第 ${idx + 1} 張相片`}
+                              className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/65 text-white flex items-center justify-center hover:bg-rose-500 transition"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+
+                      {editPolPhotos.length < MAX_POLAROID_PHOTOS && (
+                        <label className="aspect-square rounded-xl border border-dashed border-[var(--border-glass)] flex flex-col items-center justify-center gap-1 text-[11px] text-[var(--text-secondary)] cursor-pointer hover:bg-white/40 dark:hover:bg-slate-800/40 transition p-2 text-center">
+                          <Plus className="h-4 w-4" />
+                          <span>新增照片</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            onChange={(e) => {
+                              handlePolaroidFilesSelect(e.target.files, 'edit');
+                              e.target.value = '';
+                            }}
+                            className="hidden"
+                          />
+                        </label>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                        拍攝日期
+                      </label>
+                      <input
+                        type="date"
+                        required
+                        value={editPolDate}
+                        onChange={(e) => setEditPolDate(e.target.value)}
+                        className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-base sm:text-sm font-mono-tabular outline-none pointer-events-auto select-text touch-manipulation"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                        拍攝地點
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={60}
+                        value={editPolLoc}
+                        onChange={(e) => setEditPolLoc(e.target.value)}
+                        placeholder="例如：淡水漁人碼頭"
+                        className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-3 py-2.5 text-base sm:text-sm outline-none pointer-events-auto select-text touch-manipulation"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      正面手寫標題
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={60}
+                      value={editPolFront}
+                      onChange={(e) => setEditPolFront(e.target.value)}
+                      placeholder="寫在拍立得下方的短句"
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-base sm:text-sm outline-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      背面悄悄話（翻面後可見）
+                    </label>
+                    <textarea
+                      rows={3}
+                      maxLength={400}
+                      value={editPolBack}
+                      onChange={(e) => setEditPolBack(e.target.value)}
+                      placeholder="寫下想留在相片背面的悄悄話..."
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/60 dark:bg-slate-900/60 px-4 py-3 text-base sm:text-sm outline-none resize-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
+
+                  {uploadError && <p className="text-xs text-rose-500">{uploadError}</p>}
+
+                  <div className="flex items-center gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditingPol(null)}
+                      className="flex-1 min-h-[46px] rounded-2xl glass-card text-xs font-semibold"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={savingEditPol || editPolPhotos.length === 0 || !editPolFront.trim()}
+                      className="flex-1 min-h-[46px] rounded-2xl text-sm font-semibold text-white shadow transition active:scale-[0.98] disabled:opacity-50"
+                      style={{ backgroundColor: 'var(--accent-500)' }}
+                    >
+                      {savingEditPol ? '儲存變更中...' : '儲存修改'}
+                    </button>
+                  </div>
+                </motion.form>
+              </div>
+            )}
+          </AnimatePresence>,
+          document.body
+        )}
     </div>
   );
 };

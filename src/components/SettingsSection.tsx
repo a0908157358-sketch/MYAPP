@@ -41,6 +41,7 @@ export const SettingsSection: React.FC<{
     polaroids: string[];
     capsules: string[];
     memos: string[];
+    snaps: string[];
   };
 }> = ({
   coupleSpace,
@@ -120,6 +121,7 @@ export const SettingsSection: React.FC<{
         addUpdates('polaroids', allDocIdsToSyncEmail.polaroids);
         addUpdates('capsules', allDocIdsToSyncEmail.capsules);
         addUpdates('memos', allDocIdsToSyncEmail.memos);
+        addUpdates('snaps', allDocIdsToSyncEmail.snaps);
         await batch.commit();
       }
 

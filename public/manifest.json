@@ -1,0 +1,25 @@
+{
+  "id": "/",
+  "name": "嶼你 · 雙人專屬時光空間",
+  "short_name": "嶼你",
+  "description": "專屬於情侶兩人的現代微玻璃擬態即時同步空間",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#F5EBE0",
+  "background_color": "#F5EBE0",
+  "icons": [
+    {
+      "src": "/app-icon.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/app-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

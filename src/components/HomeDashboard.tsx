@@ -7,11 +7,12 @@ import {
   ChevronRight,
   HeartHandshake,
 } from 'lucide-react';
-import { ChalkboardData, CoupleSpace, PartnerProfile, SharedMemo } from '../types/couple';
+import { ChalkboardData, CoupleSpace, PartnerProfile, SharedMemo, SnapStory } from '../types/couple';
 import { computeLoveMetrics, computeUpcomingMilestones } from '../utils/loveTime';
 import { PinnedHomeChalkboard } from './ChalkboardSection';
 import { MoodStatusBar } from './MoodStatusBar';
 import { SharedMemoCard } from './SharedMemoCard';
+import { SnapStoryWidget } from './SnapStoryWidget';
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
@@ -24,6 +25,7 @@ export const HomeDashboard: React.FC<{
   activeBoard: ChalkboardData | null;
   otherBoard: ChalkboardData | null;
   memos: SharedMemo[];
+  snaps: SnapStory[];
   allowedEmails: string[];
   perspectiveMode: 'self' | 'partner';
   onTogglePerspective: () => void;
@@ -38,6 +40,7 @@ export const HomeDashboard: React.FC<{
   activeBoard,
   otherBoard,
   memos,
+  snaps,
   allowedEmails,
   perspectiveMode,
   onTogglePerspective,
@@ -362,6 +365,13 @@ export const HomeDashboard: React.FC<{
       {/* 5. 首頁最下方：雙人共享備忘錄 */}
       <SharedMemoCard
         memos={memos}
+        myProfile={myProfile}
+        allowedEmails={allowedEmails}
+      />
+
+      {/* 6. IG 訊息風格：右側半露 24h 隨手拍 */}
+      <SnapStoryWidget
+        snaps={snaps}
         myProfile={myProfile}
         allowedEmails={allowedEmails}
       />

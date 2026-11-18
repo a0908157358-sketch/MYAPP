@@ -98,6 +98,7 @@ export interface TimelineNode {
 export interface PolaroidPhoto {
   id: string;
   photoDataUrl: string;
+  photoDataUrls?: string[];
   captionDate: string;
   frontCaption: string;
   backNote: string;
@@ -132,6 +133,19 @@ export interface SharedMemo {
   completed: boolean;
   creatorUid: string;
   creatorName: string;
+  allowedEmails: string[];
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface SnapStory {
+  id: string;
+  photoDataUrl: string;
+  caption: string;
+  creatorUid: string;
+  creatorName: string;
+  createdAtMs: number;
+  expiresAtMs: number;
   allowedEmails: string[];
   createdAt?: unknown;
   updatedAt?: unknown;

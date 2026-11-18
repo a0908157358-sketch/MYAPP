@@ -397,7 +397,16 @@ service cloud.firestore {
       allow delete: if isValidId(nodeId) && isCoupleMember() && userEmail() in existing().allowedEmails;
     }
 
-    // 7. Polaroid Wall
+    // 7. Polaroid Wall (single or multi-photo posts + editing)
+    function isValidPhotoList(urls) {
+      return urls is list &&
+        urls.size() >= 1 &&
+        urls.size() <= 6 &&
+        urls[0] is string &&
+        urls[0].size() >= 10 &&
+        urls[0].size() <= 450000;
+    }
+
     function isValidPolaroid(data) {
       return data.keys().hasAll([
           'id', 'photoDataUrl', 'captionDate', 'frontCaption', 'backNote',
@@ -405,12 +414,13 @@ service cloud.firestore {
           'allowedEmails', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'id', 'photoDataUrl', 'captionDate', 'frontCaption', 'backNote',
+          'id', 'photoDataUrl', 'photoDataUrls', 'captionDate', 'frontCaption', 'backNote',
           'location', 'tiltDeg', 'creatorUid', 'creatorName',
           'allowedEmails', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.id) &&
         data.photoDataUrl is string && data.photoDataUrl.size() >= 10 && data.photoDataUrl.size() <= 450000 &&
+        (!('photoDataUrls' in data) || isValidPhotoList(data.photoDataUrls)) &&
         data.captionDate is string && data.captionDate.size() >= 1 && data.captionDate.size() <= 30 &&
         data.frontCaption is string && data.frontCaption.size() >= 1 && data.frontCaption.size() <= 60 &&
         data.backNote is string && data.backNote.size() <= 400 &&
@@ -442,7 +452,9 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
         (
-          incoming().diff(existing()).affectedKeys().hasOnly(['backNote', 'location', 'frontCaption', 'captionDate', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'photoDataUrl', 'photoDataUrls', 'backNote', 'location', 'frontCaption', 'captionDate', 'updatedAt'
+          ]) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
         );
       allow delete: if isValidId(photoId) && isCoupleMember() && userEmail() in existing().allowedEmails;
@@ -557,6 +569,50 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
         );
       allow delete: if isValidId(memoId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+    }
+
+    // 10. 24-Hour Ephemeral IG-Style Snap Stories
+    function isValidSnap(data) {
+      return data.keys().hasAll([
+          'id', 'photoDataUrl', 'caption', 'creatorUid', 'creatorName',
+          'createdAtMs', 'expiresAtMs', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'photoDataUrl', 'caption', 'creatorUid', 'creatorName',
+          'createdAtMs', 'expiresAtMs', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.photoDataUrl is string && data.photoDataUrl.size() >= 10 && data.photoDataUrl.size() <= 450000 &&
+        data.caption is string && data.caption.size() <= 80 &&
+        data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
+        data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 30 &&
+        data.createdAtMs is number && data.createdAtMs > 0 &&
+        data.expiresAtMs is number && data.expiresAtMs > data.createdAtMs &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /snaps/{snapId} {
+      allow get: if isValidId(snapId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+      allow list: if isVerifiedUser() && userEmail() in resource.data.allowedEmails;
+      allow create: if isValidId(snapId) &&
+        isCoupleMember() &&
+        isValidSnap(incoming()) &&
+        incoming().id == snapId &&
+        incoming().creatorUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(snapId) &&
+        isCoupleMember() &&
+        userEmail() in existing().allowedEmails &&
+        isValidSnap(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().creatorUid == existing().creatorUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt']);
+      allow delete: if isValidId(snapId) && isCoupleMember() && userEmail() in existing().allowedEmails;
     }
   }
 }
