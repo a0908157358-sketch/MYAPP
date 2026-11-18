@@ -137,13 +137,13 @@ export const SharedMemoCard: React.FC<{
           value={content}
           onChange={(e) => setContent(e.target.value)}
           placeholder="新增生活瑣事或備忘（例：下班順路買鮮奶）"
-          className="flex-1 min-w-0 rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-2.5 text-sm outline-none"
+          className="flex-1 min-w-0 min-h-[44px] rounded-2xl border border-[var(--border-glass)] bg-white/75 dark:bg-black/30 px-4 py-2.5 text-base sm:text-sm outline-none pointer-events-auto select-text touch-manipulation focus:border-[var(--accent-500)]"
         />
         <button
           type="submit"
           disabled={adding || !content.trim()}
           aria-label="新增備忘事項"
-          className="min-h-[42px] px-4 rounded-2xl text-xs font-semibold text-white shrink-0 inline-flex items-center gap-1.5 shadow-sm transition active:scale-95 disabled:opacity-50"
+          className="min-h-[44px] px-4 rounded-2xl text-xs font-semibold text-white shrink-0 inline-flex items-center gap-1.5 shadow-sm transition active:scale-95 disabled:opacity-50 pointer-events-auto touch-manipulation"
           style={{ backgroundColor: 'var(--accent-500)' }}
         >
           <Plus className="h-4 w-4" />

@@ -50,10 +50,19 @@
 
   input,
   textarea,
+  select,
   [contenteditable="true"] {
     -webkit-user-select: text;
     user-select: text;
     -webkit-touch-callout: default;
+    pointer-events: auto;
+    touch-action: manipulation;
+  }
+
+  button,
+  a,
+  label {
+    touch-action: manipulation;
   }
 }
 

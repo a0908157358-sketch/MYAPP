@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { Check, Plus, Sparkles, X } from 'lucide-react';
@@ -44,6 +45,7 @@ export const MoodStatusBar: React.FC<{
   const [customEmoji, setCustomEmoji] = useState('✨');
   const [customText, setCustomText] = useState('');
   const [saving, setSaving] = useState(false);
+  const customTextInputRef = useRef<HTMLInputElement | null>(null);
 
   const customMoods = useMemo(() => {
     const rawList = Array.isArray(myProfile.customMoods) ? myProfile.customMoods : [];
@@ -151,21 +153,32 @@ export const MoodStatusBar: React.FC<{
         )}
       </div>
 
-      {/* 心情與狀態快速切換 / 自訂建立 Modal */}
-      <AnimatePresence>
-        {openPicker && (
-          <div
-            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-sm p-3 sm:p-4"
-            onClick={() => setOpenPicker(false)}
-          >
-            <motion.div
-              initial={{ opacity: 0, y: 24, scale: 0.97 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 20, scale: 0.97 }}
-              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-              onClick={(e) => e.stopPropagation()}
-              className="glass-card-strong w-full max-w-md max-h-[88vh] overflow-y-auto rounded-3xl p-5 sm:p-6 shadow-2xl space-y-5"
-            >
+      {/* 心情與狀態快速切換 / 自訂建立 Modal（Portal 至 body 避免父層動畫影響觸控聚焦） */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {openPicker && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 pointer-events-auto">
+                {/* 獨立背景遮罩層，避免點擊輸入框時誤觸發關閉或阻擋點擊 */}
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onClick={() => setOpenPicker(false)}
+                  className="absolute inset-0 bg-black/55 backdrop-blur-sm"
+                  aria-hidden="true"
+                />
+
+                <motion.div
+                  initial={{ opacity: 0, y: 18, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 14, scale: 0.97 }}
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={`${myProfile.nickname} 的今日狀態`}
+                  className="glass-card-strong relative z-10 w-full max-w-md max-h-[85dvh] overflow-y-auto rounded-3xl p-5 sm:p-6 shadow-2xl space-y-5 pointer-events-auto"
+                >
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
                   <Sparkles className="h-5 w-5 text-[var(--accent-600)] dark:text-[var(--accent-400)]" />
@@ -298,23 +311,29 @@ export const MoodStatusBar: React.FC<{
                     maxLength={8}
                     value={customEmoji}
                     onChange={(e) => setCustomEmoji(e.target.value)}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
                     aria-label="狀態 Emoji"
                     placeholder="✨"
-                    className="w-14 text-center rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-2 py-2.5 text-base outline-none shrink-0"
+                    className="w-14 min-h-[46px] text-center rounded-2xl border border-[var(--border-glass)] bg-white/75 dark:bg-black/30 px-2 py-2.5 text-base outline-none shrink-0 pointer-events-auto select-text touch-manipulation focus:border-[var(--accent-500)]"
                   />
                   <input
+                    ref={customTextInputRef}
                     type="text"
                     required
                     maxLength={18}
                     value={customText}
                     onChange={(e) => setCustomText(e.target.value)}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onClick={() => customTextInputRef.current?.focus()}
                     placeholder="輸入狀態文字（例：買飲料中）"
-                    className="flex-1 min-w-0 rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-3.5 py-2.5 text-sm outline-none"
+                    className="flex-1 min-w-0 min-h-[46px] rounded-2xl border border-[var(--border-glass)] bg-white/75 dark:bg-black/30 px-3.5 py-2.5 text-base sm:text-sm outline-none pointer-events-auto select-text touch-manipulation focus:border-[var(--accent-500)]"
                   />
                   <button
                     type="submit"
                     disabled={saving || !customText.trim()}
-                    className="min-h-[42px] px-3.5 rounded-2xl text-xs font-semibold text-white shrink-0 inline-flex items-center gap-1 transition active:scale-95 disabled:opacity-50"
+                    className="min-h-[46px] px-4 rounded-2xl text-xs font-semibold text-white shrink-0 inline-flex items-center gap-1 transition active:scale-95 disabled:opacity-50 pointer-events-auto touch-manipulation"
                     style={{ backgroundColor: 'var(--accent-500)' }}
                   >
                     <Plus className="h-3.5 w-3.5" />
@@ -327,7 +346,7 @@ export const MoodStatusBar: React.FC<{
                     type="button"
                     disabled={saving}
                     onClick={() => applyMood('', '')}
-                    className="w-full min-h-[38px] rounded-xl text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition"
+                    className="w-full min-h-[40px] rounded-xl text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition pointer-events-auto touch-manipulation"
                   >
                     清除目前心情狀態
                   </button>
@@ -336,7 +355,9 @@ export const MoodStatusBar: React.FC<{
             </motion.div>
           </div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+          document.body
+        )}
     </>
   );
 };
