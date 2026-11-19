@@ -1,23 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { deleteDoc, doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { deleteDoc, doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import {
   Camera,
   ChevronLeft,
   ChevronRight,
   Clock,
   ImagePlus,
+  MessageCircleHeart,
   Plus,
+  Send,
   Trash2,
   X,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { PartnerProfile, SnapStory } from '../types/couple';
+import { PartnerProfile, SnapReply, SnapStory } from '../types/couple';
 import { compressImageFile } from '../utils/imageCompression';
 
-function generateSnapId(): string {
-  return `snap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+function generateSnapId(prefix = 'snap'): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function formatRemaining24h(msRemaining: number): string {
@@ -46,12 +48,20 @@ export const SnapStoryWidget: React.FC<{
   const [mode, setMode] = useState<'view' | 'compose'>('view');
   const [activeIndex, setActiveIndex] = useState(0);
 
+  // Locally tracked seen snap IDs for instant calm transition on tap
+  const [locallySeenIds, setLocallySeenIds] = useState<string[]>([]);
+
   // Composer state
   const [draftPhoto, setDraftPhoto] = useState('');
   const [draftCaption, setDraftCaption] = useState('');
   const [uploading, setUploading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const captionInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Reply state
+  const [replyText, setReplyText] = useState('');
+  const [sendingReply, setSendingReply] = useState(false);
+  const replyInputRef = useRef<HTMLInputElement | null>(null);
 
   // 24 小時自動倒數與過期清理過濾
   useEffect(() => {
@@ -72,8 +82,44 @@ export const SnapStoryWidget: React.FC<{
   const safeIndex = activeSnaps.length > 0 ? Math.min(activeIndex, activeSnaps.length - 1) : 0;
   const currentSnap = activeSnaps[safeIndex] || null;
 
+  // 判斷對方是否發了尚未點開看過的新隨手拍
+  const hasUnreadSnap = useMemo(() => {
+    return activeSnaps.some(
+      (s) =>
+        s.creatorUid !== myProfile.uid &&
+        !(s.seenByUids || []).includes(myProfile.uid) &&
+        !locallySeenIds.includes(s.id)
+    );
+  }, [activeSnaps, myProfile.uid, locallySeenIds]);
+
+  // 展開看過後自動標記為已讀，讓呼吸提醒恢復平靜
+  useEffect(() => {
+    if (!modalOpen || mode !== 'view' || !currentSnap) return;
+    if (currentSnap.creatorUid === myProfile.uid) return;
+
+    const alreadySeenInDoc = (currentSnap.seenByUids || []).includes(myProfile.uid);
+    const alreadySeenLocally = locallySeenIds.includes(currentSnap.id);
+
+    if (!alreadySeenLocally) {
+      setLocallySeenIds((prev) => (prev.includes(currentSnap.id) ? prev : [...prev, currentSnap.id]));
+    }
+
+    if (!alreadySeenInDoc) {
+      const nextSeen = Array.from(
+        new Set([...(currentSnap.seenByUids || []), myProfile.uid])
+      ).slice(0, 4);
+      updateDoc(doc(db, 'snaps', currentSnap.id), {
+        seenByUids: nextSeen,
+        updatedAt: serverTimestamp(),
+      }).catch((err) =>
+        handleFirestoreError(err, OperationType.UPDATE, `snaps/${currentSnap.id}`)
+      );
+    }
+  }, [modalOpen, mode, currentSnap, myProfile.uid, locallySeenIds]);
+
   const handleOpenEdgeThumbnail = () => {
     setErrorMsg('');
+    setReplyText('');
     if (activeSnaps.length > 0) {
       setActiveIndex(0);
       setMode('view');
@@ -113,7 +159,7 @@ export const SnapStoryWidget: React.FC<{
     if (!draftPhoto) return;
     setUploading(true);
     setErrorMsg('');
-    const id = generateSnapId();
+    const id = generateSnapId('snap');
     const createdAtMs = Date.now();
     const expiresAtMs = createdAtMs + 24 * 60 * 60 * 1000;
 
@@ -126,6 +172,8 @@ export const SnapStoryWidget: React.FC<{
         creatorName: myProfile.nickname,
         createdAtMs,
         expiresAtMs,
+        seenByUids: [myProfile.uid],
+        replies: [],
         allowedEmails,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -138,6 +186,32 @@ export const SnapStoryWidget: React.FC<{
       handleFirestoreError(error, OperationType.CREATE, `snaps/${id}`);
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleSendReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentSnap || !replyText.trim() || sendingReply) return;
+    setSendingReply(true);
+    const cleanText = replyText.trim().slice(0, 200);
+    const nextReply: SnapReply = {
+      id: generateSnapId('reply'),
+      senderUid: myProfile.uid,
+      senderName: myProfile.nickname,
+      text: cleanText,
+      createdAtMs: Date.now(),
+    };
+    const nextReplies = [...(currentSnap.replies || []), nextReply].slice(-30);
+    try {
+      await updateDoc(doc(db, 'snaps', currentSnap.id), {
+        replies: nextReplies,
+        updatedAt: serverTimestamp(),
+      });
+      setReplyText('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `snaps/${currentSnap.id}`);
+    } finally {
+      setSendingReply(false);
     }
   };
 
@@ -156,47 +230,83 @@ export const SnapStoryWidget: React.FC<{
 
   return (
     <>
-      {/* 右側邊緣半露小方框縮圖（露出約 25%~30% 最新照片或 ＋隨手拍） */}
-      <div className="fixed right-0 top-[30%] sm:top-[32%] z-30 pointer-events-none">
-        <button
-          type="button"
-          onClick={handleOpenEdgeThumbnail}
-          aria-label={latestSnap ? `查看 ${latestSnap.creatorName} 的 24h 隨手拍` : '新增 24h 隨手拍'}
-          className="pointer-events-auto group relative flex items-center justify-start w-[76px] h-[76px] sm:w-[86px] sm:h-[86px] rounded-2xl overflow-hidden border-2 border-white/85 dark:border-white/35 shadow-2xl transition-transform duration-300 ease-out translate-x-[68%] hover:translate-x-[58%] active:scale-95 touch-manipulation"
-          style={{
-            backgroundColor: latestSnap ? '#141519' : 'var(--bg-surface-strong)',
-          }}
+      {/* 右側邊緣半露小方框縮圖（固定精緻大小，預設向左傾斜 25 度，未讀時於 -28deg ~ -22deg 之間輕微晃動） */}
+      <div className="fixed right-0 top-[44%] sm:top-[42%] z-30 pointer-events-none">
+        <motion.div
+          initial={{ rotate: -25 }}
+          animate={
+            hasUnreadSnap
+              ? { rotate: [-25, -28, -22, -27, -23, -25] }
+              : { rotate: -25 }
+          }
+          transition={
+            hasUnreadSnap
+              ? { duration: 1.35, repeat: Infinity, ease: 'easeInOut' }
+              : { duration: 0.25, ease: 'easeOut' }
+          }
+          style={{ transformOrigin: '78% 50%' }}
         >
-          {latestSnap ? (
-            <>
-              <img
-                src={latestSnap.photoDataUrl}
-                alt={`${latestSnap.creatorName} 的隨手拍`}
-                className="w-full h-full object-cover"
-              />
-              {/* 左側露出邊緣的微亮提示點 */}
-              <span
-                className="absolute top-2 left-2 h-2.5 w-2.5 rounded-full ring-2 ring-white shadow"
-                style={{ backgroundColor: 'var(--accent-500)' }}
-              />
-            </>
-          ) : (
-            <div className="w-[32%] h-full flex flex-col items-center justify-center gap-0.5 text-[var(--text-primary)] bg-white/40 dark:bg-white/10 backdrop-blur-md border-r border-[var(--border-glass)]">
-              <Plus className="h-4 w-4 text-[var(--accent-600)] dark:text-[var(--accent-400)]" />
-              <span className="text-[9px] font-bold leading-tight [writing-mode:vertical-rl]">
-                隨手拍
-              </span>
-            </div>
-          )}
-        </button>
+          <button
+            type="button"
+            onClick={handleOpenEdgeThumbnail}
+            aria-label={
+              latestSnap
+                ? `${hasUnreadSnap ? '未讀：' : ''}查看 ${latestSnap.creatorName} 的 24h 隨手拍`
+                : '新增 24h 隨手拍'
+            }
+            className={`pointer-events-auto group relative flex items-center justify-start w-[82px] h-[82px] sm:w-[90px] sm:h-[90px] rounded-2xl overflow-hidden transition-transform duration-300 ease-out translate-x-[50%] hover:translate-x-[42%] touch-manipulation ${
+              hasUnreadSnap
+                ? 'border-2 border-[var(--accent-400)] ring-2 ring-[var(--accent-400)]/70 shadow-[0_0_24px_var(--accent-glow-1)]'
+                : 'border-2 border-white/85 dark:border-white/35 shadow-2xl'
+            }`}
+            style={{
+              backgroundColor: latestSnap ? '#141519' : 'var(--bg-surface-strong)',
+            }}
+          >
+            {latestSnap ? (
+              <>
+                <img
+                  src={latestSnap.photoDataUrl}
+                  alt={`${latestSnap.creatorName} 的隨手拍`}
+                  className="w-full h-full object-cover"
+                />
+                {/* 左側露出邊緣的未讀/新動態提示點 */}
+                {hasUnreadSnap ? (
+                  <span className="absolute top-2 left-2 flex h-3 w-3">
+                    <span
+                      className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-80"
+                      style={{ backgroundColor: 'var(--accent-400)' }}
+                    />
+                    <span
+                      className="relative inline-flex rounded-full h-3 w-3 ring-2 ring-white shadow"
+                      style={{ backgroundColor: 'var(--accent-500)' }}
+                    />
+                  </span>
+                ) : (
+                  <span
+                    className="absolute top-2 left-2 h-2.5 w-2.5 rounded-full ring-2 ring-white/90 shadow"
+                    style={{ backgroundColor: 'var(--accent-500)' }}
+                  />
+                )}
+              </>
+            ) : (
+              <div className="w-[46%] h-full flex flex-col items-center justify-center gap-0.5 text-[var(--text-primary)] bg-white/45 dark:bg-white/10 backdrop-blur-md border-r border-[var(--border-glass)]">
+                <Plus className="h-4 w-4 text-[var(--accent-600)] dark:text-[var(--accent-400)]" />
+                <span className="text-[10px] font-bold leading-tight [writing-mode:vertical-rl]">
+                  隨手拍
+                </span>
+              </div>
+            )}
+          </button>
+        </motion.div>
       </div>
 
-      {/* 1:1 彈出正方形卡片 Modal（背景微暗模糊，點擊卡片外部即關閉） */}
+      {/* 1:1 彈出正方形卡片 Modal（照片下方附即時回覆留言區，背景微暗模糊，點擊卡片外部即關閉） */}
       {typeof document !== 'undefined' &&
         createPortal(
           <AnimatePresence>
             {modalOpen && (
-              <div className="fixed inset-0 z-[100] flex items-center justify-center p-5 pointer-events-auto">
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-5 pointer-events-auto">
                 {/* 點擊外部關閉遮罩 */}
                 <motion.div
                   initial={{ opacity: 0 }}
@@ -207,20 +317,19 @@ export const SnapStoryWidget: React.FC<{
                   aria-hidden="true"
                 />
 
-                {/* 精緻 1:1 正方形卡片 */}
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.9, y: 16 }}
-                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.92, y: 12 }}
-                  transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-                  role="dialog"
-                  aria-modal="true"
-                  aria-label="24 小時隨手拍"
-                  className="relative z-10 w-full max-w-[360px] sm:max-w-[400px] aspect-square rounded-3xl overflow-hidden bg-[#141519] border border-white/20 shadow-2xl flex flex-col justify-between pointer-events-auto"
-                >
-                  {mode === 'view' && currentSnap ? (
-                    <>
-                      {/* 完整 1:1 不裁切照片顯示 */}
+                {mode === 'view' && currentSnap ? (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9, y: 16 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.92, y: 12 }}
+                    transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="24 小時隨手拍"
+                    className="relative z-10 w-full max-w-[375px] sm:max-w-[415px] max-h-[88vh] rounded-3xl overflow-hidden bg-[#141519] border border-white/20 shadow-2xl flex flex-col pointer-events-auto"
+                  >
+                    {/* 上半部：嚴格 1:1 正方形照片展示區（object-contain 不裁切）+ 文字說明 */}
+                    <div className="relative w-full aspect-square shrink-0 bg-[#141519] flex flex-col justify-between">
                       <img
                         src={currentSnap.photoDataUrl}
                         alt={currentSnap.caption || `${currentSnap.creatorName} 的隨手拍`}
@@ -314,8 +423,8 @@ export const SnapStoryWidget: React.FC<{
                         </>
                       )}
 
-                      {/* 底部疊加文字與「＋換一張 / 新增隨手拍」按鈕 */}
-                      <div className="relative z-10 p-3.5 bg-gradient-to-t from-black/80 via-black/45 to-transparent space-y-2.5">
+                      {/* 照片底部疊加文字與「＋換一張 / 新增隨手拍」按鈕 */}
+                      <div className="relative z-10 p-3.5 bg-gradient-to-t from-black/80 via-black/45 to-transparent space-y-2">
                         {currentSnap.caption && (
                           <div className="flex justify-center">
                             <p className="inline-block max-w-full rounded-2xl bg-black/55 backdrop-blur-md border border-white/15 px-3.5 py-1.5 text-xs sm:text-sm font-medium text-white text-center break-words">
@@ -328,7 +437,7 @@ export const SnapStoryWidget: React.FC<{
                           <button
                             type="button"
                             onClick={handleSwitchToCompose}
-                            className="min-h-[36px] px-3.5 py-1.5 rounded-full text-xs font-semibold text-white shadow-lg inline-flex items-center gap-1.5 transition active:scale-95 touch-manipulation"
+                            className="min-h-[34px] px-3 py-1 rounded-full text-[11px] font-semibold text-white shadow-lg inline-flex items-center gap-1 transition active:scale-95 touch-manipulation"
                             style={{ backgroundColor: 'var(--accent-500)' }}
                           >
                             <Plus className="h-3.5 w-3.5" />
@@ -336,9 +445,86 @@ export const SnapStoryWidget: React.FC<{
                           </button>
                         </div>
                       </div>
-                    </>
-                  ) : (
-                    /* 1:1 拍攝 / 上傳與加字模式 */
+                    </div>
+
+                    {/* 下半部：照片與文字說明下方的「即時回覆留言區」 */}
+                    <div className="bg-[#181A20] border-t border-white/10 p-3.5 space-y-2.5 text-white shrink-0">
+                      <div className="flex items-center justify-between text-[11px] text-white/60">
+                        <span className="inline-flex items-center gap-1.5 font-medium text-white/80">
+                          <MessageCircleHeart className="h-3.5 w-3.5 text-[var(--accent-400)]" />
+                          回覆留言
+                        </span>
+                        <span className="font-mono-tabular">
+                          {(currentSnap.replies || []).length} 則
+                        </span>
+                      </div>
+
+                      <div className="max-h-[112px] overflow-y-auto space-y-1.5 pr-1">
+                        {(currentSnap.replies || []).length === 0 ? (
+                          <p className="text-[11px] text-white/40 py-1">
+                            還沒人留言，寫下一句回應這張隨手拍吧…
+                          </p>
+                        ) : (
+                          (currentSnap.replies || []).map((rep) => (
+                            <div
+                              key={rep.id}
+                              className="rounded-xl bg-white/[0.06] border border-white/[0.08] px-2.5 py-1.5 text-xs flex items-baseline justify-between gap-2"
+                            >
+                              <div className="min-w-0 flex-1 break-words">
+                                <span
+                                  className="font-semibold mr-1.5"
+                                  style={{ color: 'var(--accent-400)' }}
+                                >
+                                  {rep.senderName}
+                                </span>
+                                <span className="text-white/90">{rep.text}</span>
+                              </div>
+                              <span className="text-[10px] font-mono-tabular text-white/45 shrink-0">
+                                {formatPublishTime(rep.createdAtMs)}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <form onSubmit={handleSendReply} className="flex items-center gap-2">
+                        <input
+                          ref={replyInputRef}
+                          type="text"
+                          maxLength={200}
+                          value={replyText}
+                          onChange={(e) => setReplyText(e.target.value)}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onTouchStart={(e) => e.stopPropagation()}
+                          onClick={() => replyInputRef.current?.focus()}
+                          placeholder="回覆這張照片..."
+                          className="flex-1 min-h-[38px] rounded-xl border border-white/15 bg-black/40 px-3 py-1.5 text-base sm:text-xs text-white placeholder:text-white/45 outline-none pointer-events-auto select-text touch-manipulation focus:border-white/50"
+                        />
+                        <button
+                          type="submit"
+                          disabled={!replyText.trim() || sendingReply}
+                          aria-label="送出回覆"
+                          className="min-h-[38px] px-3 rounded-xl text-xs font-semibold text-white inline-flex items-center gap-1 transition active:scale-95 disabled:opacity-40 pointer-events-auto touch-manipulation shrink-0"
+                          style={{ backgroundColor: 'var(--accent-500)' }}
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                          <span>送出</span>
+                        </button>
+                      </form>
+                    </div>
+                  </motion.div>
+                ) : (
+                  /* 1:1 拍攝 / 上傳與加字模式 */
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9, y: 16 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.92, y: 12 }}
+                    transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="新增 24 小時隨手拍"
+                    className="relative z-10 w-full max-w-[360px] sm:max-w-[400px] aspect-square rounded-3xl overflow-hidden bg-[#141519] border border-white/20 shadow-2xl flex flex-col justify-between pointer-events-auto"
+                  >
                     <form
                       onSubmit={handlePublishSnap}
                       className="relative w-full h-full flex flex-col justify-between text-white"
@@ -452,8 +638,8 @@ export const SnapStoryWidget: React.FC<{
                         </button>
                       </div>
                     </form>
-                  )}
-                </motion.div>
+                  </motion.div>
+                )}
               </div>
             )}
           </AnimatePresence>,

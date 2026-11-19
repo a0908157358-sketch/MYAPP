@@ -69,7 +69,7 @@
         "mode": { "type": "string", "enum": ["text", "draw"], "maxLength": 10 },
         "textContent": { "type": "string", "maxLength": 600 },
         "fontSize": { "type": "string", "enum": ["sm", "md", "lg"], "maxLength": 10 },
-        "chalkColor": { "type": "string", "enum": ["white", "pink", "blue", "yellow"], "maxLength": 20 },
+        "chalkColor": { "type": "string", "maxLength": 20, "description": "Quick preset ID or #RRGGBB hex color." },
         "drawingDataUrl": { "type": "string", "maxLength": 350000 },
         "allowedEmails": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -227,11 +227,48 @@
         "creatorName": { "type": "string", "maxLength": 30 },
         "createdAtMs": { "type": "number" },
         "expiresAtMs": { "type": "number" },
+        "seenByUids": { "type": "array", "description": "UIDs of partners who have viewed this snap." },
+        "replies": { "type": "array", "description": "Up to 30 live replies left underneath this snap photo." },
         "allowedEmails": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "photoDataUrl", "caption", "creatorUid", "creatorName", "createdAtMs", "expiresAtMs", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "WishRequest": {
+      "title": "WishRequest",
+      "description": "Two-way wish request sent by one partner that converts into an official WishVoucher when accepted.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "requesterUid": { "type": "string", "maxLength": 128 },
+        "requesterEmail": { "type": "string", "maxLength": 120 },
+        "requesterName": { "type": "string", "maxLength": 30 },
+        "targetEmail": { "type": "string", "maxLength": 120 },
+        "title": { "type": "string", "maxLength": 60 },
+        "description": { "type": "string", "maxLength": 300 },
+        "expiresAt": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined"], "maxLength": 16 },
+        "convertedVoucherId": { "type": "string", "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "requesterUid",
+        "requesterEmail",
+        "requesterName",
+        "targetEmail",
+        "title",
+        "description",
+        "expiresAt",
+        "status",
+        "convertedVoucherId",
+        "allowedEmails",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -273,7 +310,11 @@
     },
     "/snaps/{snapId}": {
       "schema": { "$ref": "#/entities/SnapStory" },
-      "description": "24-hour ephemeral IG-style quick snaps between both partners."
+      "description": "24-hour ephemeral IG-style quick snaps with unread tracking and replies between both partners."
+    },
+    "/wishRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/WishRequest" },
+      "description": "Two-way wish requests awaiting partner approval or rejection."
     }
   }
 }

@@ -1,16 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import {
   Check,
   Eraser,
+  Palette,
   Pencil,
   RotateCcw,
   Trash2,
   Type,
   Undo2,
 } from 'lucide-react';
-import { CHALK_COLORS } from '../config/coupleConfig';
+import {
+  CHALK_COLORS,
+  EXTENDED_CHALK_PALETTE,
+  resolveChalkHex,
+} from '../config/coupleConfig';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { ChalkboardData, ChalkColorId, PartnerProfile } from '../types/couple';
 import { compressCanvasElement } from '../utils/imageCompression';
@@ -57,14 +62,34 @@ const EditableChalkboardPanel: React.FC<{
   const [chalkColor, setChalkColor] = useState<ChalkColorId>(boardData?.chalkColor || 'white');
   const [brushTool, setBrushTool] = useState<'chalk' | 'eraser'>('chalk');
   const [lineWidth, setLineWidth] = useState<number>(5);
+  const [showColorPalette, setShowColorPalette] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const paletteContainerRef = useRef<HTMLDivElement | null>(null);
   const isDrawingRef = useRef(false);
   const lastPosRef = useRef<{ x: number; y: number } | null>(null);
   const historyRef = useRef<ImageData[]>([]);
   const syncedUidRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!showColorPalette) return;
+    const handleOutside = (ev: MouseEvent | TouchEvent) => {
+      if (
+        paletteContainerRef.current &&
+        !paletteContainerRef.current.contains(ev.target as Node)
+      ) {
+        setShowColorPalette(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('touchstart', handleOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('touchstart', handleOutside);
+    };
+  }, [showColorPalette]);
 
   useEffect(() => {
     if (boardData && syncedUidRef.current !== ownerProfile.uid) {
@@ -150,7 +175,7 @@ const EditableChalkboardPanel: React.FC<{
       return;
     }
 
-    const hex = CHALK_COLORS[chalkColor].hex;
+    const hex = resolveChalkHex(chalkColor);
     const dist = Math.hypot(to.x - from.x, to.y - from.y);
     const steps = Math.max(1, Math.ceil(dist / 2));
 
@@ -305,24 +330,95 @@ const EditableChalkboardPanel: React.FC<{
           </button>
         </div>
 
-        <div className="flex items-center gap-2">
-          {(Object.keys(CHALK_COLORS) as ChalkColorId[]).map((cid) => (
+        <div ref={paletteContainerRef} className="relative flex items-center gap-1.5">
+          {(Object.keys(CHALK_COLORS) as Array<keyof typeof CHALK_COLORS>).map((cid) => (
             <button
               key={cid}
               type="button"
               onClick={() => {
                 setChalkColor(cid);
                 setBrushTool('chalk');
+                setShowColorPalette(false);
               }}
               aria-label={CHALK_COLORS[cid].label}
+              title={CHALK_COLORS[cid].label}
               className={`h-7 w-7 rounded-full border-2 transition ${
                 chalkColor === cid && brushTool === 'chalk'
                   ? 'scale-110 border-[var(--accent-400)] shadow-md'
-                  : 'border-white/25 opacity-75 hover:opacity-100'
+                  : 'border-white/25 opacity-80 hover:opacity-100'
               }`}
               style={{ backgroundColor: CHALK_COLORS[cid].hex }}
             />
           ))}
+
+          {/* 更多粉筆顏色（調色盤按鈕） */}
+          <button
+            type="button"
+            onClick={() => setShowColorPalette((v) => !v)}
+            aria-label="更多粉筆顏色"
+            aria-expanded={showColorPalette}
+            title="更多粉筆顏色"
+            className={`relative h-8 px-2.5 rounded-full border text-xs font-medium inline-flex items-center gap-1.5 transition touch-manipulation ${
+              showColorPalette || !(chalkColor in CHALK_COLORS)
+                ? 'border-[var(--accent-400)] bg-white/15 text-[var(--text-primary)] shadow-sm'
+                : 'border-[var(--border-glass)] bg-black/[0.05] dark:bg-white/5 text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            <Palette className="h-3.5 w-3.5" />
+            {!(chalkColor in CHALK_COLORS) && (
+              <span
+                className="h-3 w-3 rounded-full border border-white/60 shrink-0"
+                style={{ backgroundColor: resolveChalkHex(chalkColor) }}
+              />
+            )}
+          </button>
+
+          {/* 展開的 16 色馬卡龍與螢光粉筆色票浮動面板 */}
+          <AnimatePresence>
+            {showColorPalette && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.94, y: 6 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.94, y: 6 }}
+                transition={{ duration: 0.16 }}
+                className="absolute right-0 top-full mt-2 z-30 w-56 rounded-2xl glass-card-strong border border-[var(--border-glass)] p-3 shadow-2xl space-y-2.5"
+              >
+                <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
+                  <span className="font-semibold text-[var(--text-secondary)]">
+                    粉筆調色盤（馬卡龍 &amp; 螢光）
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {EXTENDED_CHALK_PALETTE.map((swatch) => {
+                    const isSelected =
+                      chalkColor.toLowerCase() === swatch.hex.toLowerCase() &&
+                      brushTool === 'chalk';
+                    return (
+                      <button
+                        key={swatch.hex}
+                        type="button"
+                        onClick={() => {
+                          setChalkColor(swatch.hex);
+                          setBrushTool('chalk');
+                          setShowColorPalette(false);
+                        }}
+                        aria-label={swatch.label}
+                        title={swatch.label}
+                        className={`h-9 w-full rounded-xl border-2 transition flex items-center justify-center ${
+                          isSelected
+                            ? 'scale-105 border-white shadow-md ring-2 ring-[var(--accent-500)]'
+                            : 'border-white/20 hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: swatch.hex }}
+                      >
+                        {isSelected && <Check className="h-3.5 w-3.5 text-slate-900" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 
@@ -340,7 +436,7 @@ const EditableChalkboardPanel: React.FC<{
             className={`w-full flex-1 bg-transparent resize-none outline-none placeholder:text-white/30 ${fontSizeClass(
               fontSize
             )}`}
-            style={{ color: CHALK_COLORS[chalkColor].hex }}
+            style={{ color: resolveChalkHex(chalkColor) }}
           />
           <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between gap-2">
             <div className="flex items-center gap-1 overflow-x-auto">
@@ -520,7 +616,7 @@ const ReadOnlyChalkboardPanel: React.FC<{
               boardData.fontSize || 'md'
             )}`}
             style={{
-              color: CHALK_COLORS[boardData.chalkColor || 'white']?.hex || '#F6F2EA',
+              color: resolveChalkHex(boardData.chalkColor),
             }}
           >
             {boardData.textContent || '（目前黑板空白）'}

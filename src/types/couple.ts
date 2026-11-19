@@ -1,6 +1,6 @@
 export type ColorMode = 'light' | 'dark';
 export type PartnerRole = 'boy' | 'girl' | 'custom';
-export type ChalkColorId = 'white' | 'pink' | 'blue' | 'yellow';
+export type ChalkColorId = string;
 
 export interface CoupleSpace {
   partner1Email: string;
@@ -63,6 +63,22 @@ export interface WishVoucher {
   redeemedAt: string;
   redeemedMethod: '' | 'qr' | 'pin';
   redeemedByUid: string;
+  allowedEmails: string[];
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface WishRequest {
+  id: string;
+  requesterUid: string;
+  requesterEmail: string;
+  requesterName: string;
+  targetEmail: string;
+  title: string;
+  description: string;
+  expiresAt: string;
+  status: 'pending' | 'accepted' | 'declined';
+  convertedVoucherId: string;
   allowedEmails: string[];
   createdAt?: unknown;
   updatedAt?: unknown;
@@ -138,6 +154,14 @@ export interface SharedMemo {
   updatedAt?: unknown;
 }
 
+export interface SnapReply {
+  id: string;
+  senderUid: string;
+  senderName: string;
+  text: string;
+  createdAtMs: number;
+}
+
 export interface SnapStory {
   id: string;
   photoDataUrl: string;
@@ -146,6 +170,8 @@ export interface SnapStory {
   creatorName: string;
   createdAtMs: number;
   expiresAtMs: number;
+  seenByUids?: string[];
+  replies?: SnapReply[];
   allowedEmails: string[];
   createdAt?: unknown;
   updatedAt?: unknown;

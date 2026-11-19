@@ -57,4 +57,37 @@ export const CHALK_COLORS = {
   pink: { label: '乾燥玫瑰粉', hex: '#F4A8C0' },
   blue: { label: '霧海晴空藍', hex: '#88D4F7' },
   yellow: { label: '香檳暖陽黃', hex: '#F6D57A' },
+  mint: { label: '薄荷青粉筆', hex: '#9EE6C0' },
 } as const;
+
+export const EXTENDED_CHALK_PALETTE: { label: string; hex: string }[] = [
+  // 馬卡龍柔霧粉彩色系
+  { label: '奶油蜜桃杏', hex: '#FDE4CF' },
+  { label: '蜜桃珊瑚粉', hex: '#FFADAD' },
+  { label: '櫻花草莓奶', hex: '#FFCFD2' },
+  { label: '丁香粉紫羅蘭', hex: '#F1C0E8' },
+  { label: '薰衣草淺紫', hex: '#CFBAF0' },
+  { label: '天空冰藍', hex: '#A3C4F3' },
+  { label: '湖水蒂芬妮', hex: '#90DBF4' },
+  { label: '抹茶蘋果綠', hex: '#B9FBC0' },
+  // 螢光高飽和亮彩粉筆
+  { label: '螢光粉桃', hex: '#FF6B9D' },
+  { label: '螢光檸檬黃', hex: '#F9F871' },
+  { label: '螢光萊姆綠', hex: '#7CFF6B' },
+  { label: '螢光電光青', hex: '#4DFFFF' },
+  { label: '螢光紫羅蘭', hex: '#C77DFF' },
+  { label: '熾熱蜜橘', hex: '#FF8C61' },
+  { label: '琥珀焦糖橘', hex: '#FFC478' },
+  { label: '珍珠柔霧銀', hex: '#D8DEE9' },
+];
+
+export function resolveChalkHex(colorIdOrHex?: string): string {
+  if (!colorIdOrHex) return CHALK_COLORS.white.hex;
+  if (colorIdOrHex in CHALK_COLORS) {
+    return CHALK_COLORS[colorIdOrHex as keyof typeof CHALK_COLORS].hex;
+  }
+  if (/^#[0-9A-Fa-f]{6}$/.test(colorIdOrHex)) {
+    return colorIdOrHex;
+  }
+  return CHALK_COLORS.white.hex;
+}

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   onAuthStateChanged,
@@ -18,12 +18,14 @@ import {
   where,
 } from 'firebase/firestore';
 import {
+  BellRing,
   BookHeart,
   Heart,
   Home,
   Settings,
   Ticket,
   WifiOff,
+  X,
 } from 'lucide-react';
 import {
   ALLOWED_EMAILS,
@@ -50,6 +52,7 @@ import {
   TimeCapsuleLetter,
   TimelineNode,
   WishlistItem,
+  WishRequest,
   WishVoucher,
 } from './types/couple';
 import {
@@ -75,6 +78,13 @@ import { SettingsSection } from './components/SettingsSection';
 export { ALLOWED_EMAILS, firebaseConfig };
 
 type ActiveTab = 'home' | 'board' | 'story' | 'wishlist' | 'settings';
+
+interface InAppToast {
+  id: string;
+  title: string;
+  message: string;
+  tab?: ActiveTab;
+}
 
 const NAV_ITEMS: { id: ActiveTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'home', label: '首頁', icon: Home },
@@ -134,6 +144,49 @@ function CoupleAppShell() {
   const [capsules, setCapsules] = useState<TimeCapsuleLetter[]>([]);
   const [memos, setMemos] = useState<SharedMemo[]>([]);
   const [snaps, setSnaps] = useState<SnapStory[]>([]);
+  const [wishRequests, setWishRequests] = useState<WishRequest[]>([]);
+  const [activeToast, setActiveToast] = useState<InAppToast | null>(null);
+
+  const partnersRef = useRef<PartnerProfile[]>([]);
+  const coupleSpaceRef = useRef<CoupleSpace | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    partnersRef.current = partners;
+  }, [partners]);
+
+  useEffect(() => {
+    coupleSpaceRef.current = coupleSpace;
+  }, [coupleSpace]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  const showToast = useCallback((toast: Omit<InAppToast, 'id'>) => {
+    const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    setActiveToast({ ...toast, id });
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setActiveToast((curr) => (curr?.id === id ? null : curr));
+    }, 4800);
+  }, []);
+
+  const getPartnerDisplayName = useCallback((myUid: string, fallbackName?: string) => {
+    const partner = partnersRef.current.find((p) => p.uid !== myUid);
+    if (partner?.nickname?.trim()) return partner.nickname.trim();
+    if (fallbackName?.trim()) return fallbackName.trim();
+    const myEmail = auth.currentUser?.email?.trim().toLowerCase() || '';
+    const spaceEmails = coupleSpaceRef.current?.allowedEmails || ALLOWED_EMAILS;
+    const otherEmail = spaceEmails.find((e) => e.trim().toLowerCase() !== myEmail);
+    return otherEmail ? otherEmail.split('@')[0] : '親愛的';
+  }, []);
 
   useEffect(() => {
     applyCustomPaletteToDocument(customPalette, colorMode);
@@ -246,9 +299,14 @@ function CoupleAppShell() {
         handleFirestoreError(err, OperationType.GET, `coupleSpace/${COUPLE_SPACE_DOC_ID}`)
     );
 
+    const hydratedCols: Record<string, boolean> = {};
+    const prevSnapRepliesCount: Record<string, number> = {};
+    let prevPartnerMoodKey: { uid: string; key: string } | null = null;
+
     const watchCollection = <T,>(
       colName: string,
-      setter: React.Dispatch<React.SetStateAction<T[]>>
+      setter: React.Dispatch<React.SetStateAction<T[]>>,
+      onLiveChanges?: (changes: ReturnType<typeof snapChangesFallback>) => void
     ) => {
       const q = query(
         collection(db, colName),
@@ -257,21 +315,244 @@ function CoupleAppShell() {
       return onSnapshot(
         q,
         (snap) => {
-          setter(snap.docs.map((d) => d.data() as T));
+          const docs = snap.docs.map((d) => d.data() as T);
+          setter(docs);
+
+          if (!hydratedCols[colName]) {
+            hydratedCols[colName] = true;
+            if (colName === 'snaps') {
+              (docs as unknown as SnapStory[]).forEach((s) => {
+                prevSnapRepliesCount[s.id] = (s.replies || []).length;
+              });
+            } else if (colName === 'partners') {
+              const other = (docs as unknown as PartnerProfile[]).find(
+                (p) => p.uid !== user.uid
+              );
+              if (other) {
+                prevPartnerMoodKey = {
+                  uid: other.uid,
+                  key: `${other.moodEmoji || ''}|${other.moodText || ''}`,
+                };
+              }
+            }
+            return;
+          }
+
+          if (onLiveChanges) {
+            onLiveChanges(
+              snap.docChanges().map((c) => ({
+                type: c.type,
+                data: c.doc.data(),
+              }))
+            );
+          }
         },
         (err) => handleFirestoreError(err, OperationType.LIST, colName)
       );
     };
 
-    const unsubPartners = watchCollection<PartnerProfile>('partners', setPartners);
-    const unsubChalk = watchCollection<ChalkboardData>('chalkboards', setChalkboards);
-    const unsubVouchers = watchCollection<WishVoucher>('vouchers', setVouchers);
-    const unsubWishlist = watchCollection<WishlistItem>('wishlist', setWishlistItems);
-    const unsubTimeline = watchCollection<TimelineNode>('timeline', setTimelineNodes);
-    const unsubPolaroids = watchCollection<PolaroidPhoto>('polaroids', setPolaroids);
-    const unsubCapsules = watchCollection<TimeCapsuleLetter>('capsules', setCapsules);
-    const unsubMemos = watchCollection<SharedMemo>('memos', setMemos);
-    const unsubSnaps = watchCollection<SnapStory>('snaps', setSnaps);
+    function snapChangesFallback() {
+      return [] as { type: 'added' | 'modified' | 'removed'; data: unknown }[];
+    }
+
+    const unsubPartners = watchCollection<PartnerProfile>('partners', setPartners, (changes) => {
+      changes.forEach((c) => {
+        if (c.type !== 'modified') return;
+        const d = c.data as PartnerProfile;
+        if (d.uid === user.uid) return;
+        const moodKey = `${d.moodEmoji || ''}|${d.moodText || ''}`;
+        if (
+          prevPartnerMoodKey &&
+          prevPartnerMoodKey.uid === d.uid &&
+          prevPartnerMoodKey.key !== moodKey &&
+          (d.moodEmoji || d.moodText)
+        ) {
+          const pName = d.nickname || getPartnerDisplayName(user.uid);
+          showToast({
+            title: `${pName} 切換了今日心情`,
+            message: `${d.moodEmoji || '✨'} ${d.moodText || '更新了目前狀態'}`,
+            tab: 'home',
+          });
+        }
+        prevPartnerMoodKey = { uid: d.uid, key: moodKey };
+      });
+    });
+
+    const unsubChalk = watchCollection<ChalkboardData>('chalkboards', setChalkboards, (changes) => {
+      changes.forEach((c) => {
+        if (c.type === 'removed') return;
+        const d = c.data as ChalkboardData;
+        if (d.ownerUid === user.uid) return;
+        const pName = getPartnerDisplayName(user.uid);
+        showToast({
+          title: `${pName} 更新了小黑板`,
+          message:
+            d.mode === 'draw'
+              ? '剛畫了新的粉筆塗鴉，快來看看！'
+              : d.textContent
+              ? `「${d.textContent.slice(0, 32)}${d.textContent.length > 32 ? '…' : ''}」`
+              : '更新了小黑板留言',
+          tab: 'home',
+        });
+      });
+    });
+
+    const unsubVouchers = watchCollection<WishVoucher>('vouchers', setVouchers, (changes) => {
+      changes.forEach((c) => {
+        const d = c.data as WishVoucher;
+        if (c.type === 'added' && d.creatorUid !== user.uid) {
+          const pName = getPartnerDisplayName(user.uid, d.creatorName);
+          showToast({
+            title: `${pName} 送了一張願望券給你`,
+            message: `「${d.title}」已放進你的願望券夾 🎟️`,
+            tab: 'board',
+          });
+        } else if (
+          c.type === 'modified' &&
+          d.status === 'redeemed' &&
+          d.redeemedByUid &&
+          d.redeemedByUid !== user.uid
+        ) {
+          const pName = getPartnerDisplayName(user.uid);
+          showToast({
+            title: `${pName} 兌換了你的願望券`,
+            message: `「${d.title}」剛剛完成核銷兌換 ✨`,
+            tab: 'board',
+          });
+        }
+      });
+    });
+
+    const unsubWishlist = watchCollection<WishlistItem>('wishlist', setWishlistItems, (changes) => {
+      changes.forEach((c) => {
+        if (c.type !== 'added') return;
+        const d = c.data as WishlistItem;
+        if (d.creatorUid === user.uid) return;
+        const pName = getPartnerDisplayName(user.uid, d.creatorName);
+        showToast({
+          title: `${pName} 新增了愛心願望`,
+          message: `「${d.title}」已加入雙人清單 💗`,
+          tab: 'wishlist',
+        });
+      });
+    });
+
+    const unsubTimeline = watchCollection<TimelineNode>('timeline', setTimelineNodes, (changes) => {
+      changes.forEach((c) => {
+        if (c.type !== 'added') return;
+        const d = c.data as TimelineNode;
+        if (d.creatorUid === user.uid) return;
+        const pName = getPartnerDisplayName(user.uid, d.creatorName);
+        showToast({
+          title: `${pName} 寫下了新的故事回憶`,
+          message: `「${d.title}」已記錄到故事軸 📖`,
+          tab: 'story',
+        });
+      });
+    });
+
+    const unsubPolaroids = watchCollection<PolaroidPhoto>('polaroids', setPolaroids, (changes) => {
+      changes.forEach((c) => {
+        if (c.type !== 'added') return;
+        const d = c.data as PolaroidPhoto;
+        if (d.creatorUid === user.uid) return;
+        const pName = getPartnerDisplayName(user.uid, d.creatorName);
+        showToast({
+          title: `${pName} 上傳了新拍立得`,
+          message: d.frontCaption ? `「${d.frontCaption}」` : '拍立得照片牆多了一張新回憶 📷',
+          tab: 'story',
+        });
+      });
+    });
+
+    const unsubCapsules = watchCollection<TimeCapsuleLetter>('capsules', setCapsules, (changes) => {
+      changes.forEach((c) => {
+        if (c.type !== 'added') return;
+        const d = c.data as TimeCapsuleLetter;
+        if (d.senderUid === user.uid) return;
+        const pName = getPartnerDisplayName(user.uid, d.senderName);
+        showToast({
+          title: `${pName} 寄出了一封時光膠囊`,
+          message: `「${d.title}」等待你未來開啟 ⏳`,
+          tab: 'wishlist',
+        });
+      });
+    });
+
+    const unsubMemos = watchCollection<SharedMemo>('memos', setMemos, (changes) => {
+      changes.forEach((c) => {
+        if (c.type !== 'added') return;
+        const d = c.data as SharedMemo;
+        if (d.creatorUid === user.uid) return;
+        const pName = getPartnerDisplayName(user.uid, d.creatorName);
+        showToast({
+          title: `${pName} 新增了共享備忘錄`,
+          message: `「${d.content}」`,
+          tab: 'home',
+        });
+      });
+    });
+
+    const unsubSnaps = watchCollection<SnapStory>('snaps', setSnaps, (changes) => {
+      changes.forEach((c) => {
+        const d = c.data as SnapStory;
+        const replyCount = (d.replies || []).length;
+        if (c.type === 'added') {
+          prevSnapRepliesCount[d.id] = replyCount;
+          if (d.creatorUid !== user.uid) {
+            const pName = getPartnerDisplayName(user.uid, d.creatorName);
+            showToast({
+              title: `${pName} 發布了新的 24h 隨手拍`,
+              message: d.caption ? `「${d.caption}」` : '拍了一張新照片分享給你，快點開看！',
+              tab: 'home',
+            });
+          }
+        } else if (c.type === 'modified') {
+          const prevCount = prevSnapRepliesCount[d.id] ?? 0;
+          prevSnapRepliesCount[d.id] = replyCount;
+          if (replyCount > prevCount) {
+            const latestReply = d.replies?.[replyCount - 1];
+            if (latestReply && latestReply.senderUid !== user.uid) {
+              const pName = getPartnerDisplayName(user.uid, latestReply.senderName);
+              showToast({
+                title: `${pName} 回覆了隨手拍`,
+                message: `「${latestReply.text.slice(0, 36)}${latestReply.text.length > 36 ? '…' : ''}」`,
+                tab: 'home',
+              });
+            }
+          }
+        }
+      });
+    });
+
+    const unsubWishRequests = watchCollection<WishRequest>('wishRequests', setWishRequests, (changes) => {
+      changes.forEach((c) => {
+        const d = c.data as WishRequest;
+        if (c.type === 'added' && d.requesterUid !== user.uid) {
+          const pName = getPartnerDisplayName(user.uid, d.requesterName);
+          showToast({
+            title: `${pName} 向你許了一個願望`,
+            message: `「${d.title}」等待你同意並轉為願望券 🌠`,
+            tab: 'board',
+          });
+        } else if (c.type === 'modified' && d.requesterUid === user.uid) {
+          const pName = getPartnerDisplayName(user.uid);
+          if (d.status === 'accepted') {
+            showToast({
+              title: `${pName} 同意了你的許願！`,
+              message: `「${d.title}」已自動轉換成正式願望券 🎉`,
+              tab: 'board',
+            });
+          } else if (d.status === 'declined') {
+            showToast({
+              title: `${pName} 回應了你的許願`,
+              message: `「${d.title}」暫時先保留囉 💌`,
+              tab: 'board',
+            });
+          }
+        }
+      });
+    });
 
     return () => {
       unsubSpace();
@@ -284,8 +565,9 @@ function CoupleAppShell() {
       unsubCapsules();
       unsubMemos();
       unsubSnaps();
+      unsubWishRequests();
     };
-  }, [authReady, user]);
+  }, [authReady, user, getPartnerDisplayName, showToast]);
 
   const handleGoogleLogin = async () => {
     setLoginLoading(true);
@@ -430,9 +712,57 @@ function CoupleAppShell() {
       {!isOnline && (
         <div className="sticky top-0 z-40 bg-amber-500 text-white px-4 py-2 text-xs font-medium flex items-center justify-center gap-2 shadow">
           <WifiOff className="h-3.5 w-3.5" />
-          目前處於離線模式，連線恢復後將自動與對方雙向同步
+          目前處於離線模式，連線恢復後將自動與彼此雙向同步
         </div>
       )}
+
+      {/* App 內前景即時動態通知橫幅 (Toasts) */}
+      <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[90] w-[calc(100%-24px)] max-w-md pt-safe pointer-events-none">
+        <AnimatePresence>
+          {activeToast && (
+            <motion.div
+              key={activeToast.id}
+              initial={{ opacity: 0, y: -40, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -28, scale: 0.96 }}
+              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+              className="pointer-events-auto glass-card-strong rounded-2xl px-3.5 py-3 shadow-2xl border border-[var(--accent-400)]/45 flex items-center gap-3 backdrop-blur-xl"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeToast.tab) setActiveTab(activeToast.tab);
+                  setActiveToast(null);
+                }}
+                className="flex-1 min-w-0 flex items-center gap-3 text-left"
+              >
+                <span
+                  className="h-9 w-9 rounded-xl text-white flex items-center justify-center shrink-0 shadow-sm"
+                  style={{ backgroundColor: 'var(--accent-500)' }}
+                >
+                  <BellRing className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-[var(--text-primary)] truncate">
+                    {activeToast.title}
+                  </p>
+                  <p className="text-[11px] text-[var(--text-secondary)] truncate mt-0.5">
+                    {activeToast.message}
+                  </p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveToast(null)}
+                aria-label="關閉即時通知"
+                className="h-7 w-7 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-[var(--text-muted)] flex items-center justify-center shrink-0 transition"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
 
       <main className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 pt-safe pt-4 sm:pt-7">
         <AnimatePresence mode="wait">
@@ -469,6 +799,7 @@ function CoupleAppShell() {
                 activeProfile={activeProfile}
                 realMyUid={myProfile.uid}
                 vouchers={vouchers}
+                wishRequests={wishRequests}
                 allowedEmails={currentAllowedEmails}
                 isPreviewPerspective={isPreview}
               />
@@ -519,6 +850,7 @@ function CoupleAppShell() {
                   capsules: capsules.map((c) => c.id),
                   memos: memos.map((m) => m.id),
                   snaps: snaps.map((s) => s.id),
+                  wishRequests: wishRequests.map((r) => r.id),
                 }}
               />
             )}

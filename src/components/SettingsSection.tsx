@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { doc, serverTimestamp, updateDoc, writeBatch } from 'firebase/firestore';
 import {
   Camera,
@@ -42,6 +42,7 @@ export const SettingsSection: React.FC<{
     capsules: string[];
     memos: string[];
     snaps: string[];
+    wishRequests: string[];
   };
 }> = ({
   coupleSpace,
@@ -80,6 +81,11 @@ export const SettingsSection: React.FC<{
   const [avatarDataUrl, setAvatarDataUrl] = useState(myProfile.avatarDataUrl);
   const [savingProfile, setSavingProfile] = useState(false);
   const [savedProfileNotice, setSavedProfileNotice] = useState(false);
+
+  useEffect(() => {
+    setNickname(myProfile.nickname);
+    setAvatarDataUrl(myProfile.avatarDataUrl);
+  }, [myProfile.nickname, myProfile.avatarDataUrl]);
 
   const handleSaveDatesAndWhitelist = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,6 +128,7 @@ export const SettingsSection: React.FC<{
         addUpdates('capsules', allDocIdsToSyncEmail.capsules);
         addUpdates('memos', allDocIdsToSyncEmail.memos);
         addUpdates('snaps', allDocIdsToSyncEmail.snaps);
+        addUpdates('wishRequests', allDocIdsToSyncEmail.wishRequests);
         await batch.commit();
       }
 

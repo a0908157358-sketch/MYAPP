@@ -1,21 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { doc, serverTimestamp, setDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { doc, serverTimestamp, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import {
   Camera,
+  Check,
   CheckCircle2,
   KeyRound,
   Plus,
   QrCode,
   ScanLine,
+  Sparkles,
   Ticket,
   Trash2,
   X,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { PartnerProfile, WishVoucher } from '../types/couple';
+import { PartnerProfile, WishRequest, WishVoucher } from '../types/couple';
 
 function generateId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -40,11 +43,20 @@ export const VoucherSection: React.FC<{
   activeProfile: PartnerProfile;
   realMyUid: string;
   vouchers: WishVoucher[];
+  wishRequests: WishRequest[];
   allowedEmails: string[];
   isPreviewPerspective?: boolean;
-}> = ({ activeProfile, realMyUid, vouchers, allowedEmails, isPreviewPerspective = false }) => {
+}> = ({
+  activeProfile,
+  realMyUid,
+  vouchers,
+  wishRequests,
+  allowedEmails,
+  isPreviewPerspective = false,
+}) => {
   const [subTab, setSubTab] = useState<'wallet' | 'sent' | 'redeemed'>('wallet');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showWishRequestModal, setShowWishRequestModal] = useState(false);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -54,6 +66,17 @@ export const VoucherSection: React.FC<{
     return d.toISOString().slice(0, 10);
   });
   const [creating, setCreating] = useState(false);
+
+  // 向對方許願表單狀態
+  const [wishTitle, setWishTitle] = useState('');
+  const [wishDesc, setWishDesc] = useState('');
+  const [wishExpiresAt, setWishExpiresAt] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 3);
+    return d.toISOString().slice(0, 10);
+  });
+  const [sendingWish, setSendingWish] = useState(false);
+  const [respondingWishId, setRespondingWishId] = useState<string | null>(null);
 
   // 收券人核銷視窗
   const [redeemTargetId, setRedeemTargetId] = useState<string | null>(null);
@@ -88,6 +111,24 @@ export const VoucherSection: React.FC<{
   const redeemedList = useMemo(
     () => vouchers.filter((v) => v.status === 'redeemed'),
     [vouchers]
+  );
+
+  // 對方許給我的待回應許願請求（顯示在頁面最上方）
+  const incomingPendingWishes = useMemo(
+    () =>
+      wishRequests.filter(
+        (r) => r.status === 'pending' && r.requesterUid !== activeProfile.uid
+      ),
+    [wishRequests, activeProfile.uid]
+  );
+
+  // 我向對方許的願望（等待對方回應中）
+  const myPendingWishes = useMemo(
+    () =>
+      wishRequests.filter(
+        (r) => r.status === 'pending' && r.requesterUid === activeProfile.uid
+      ),
+    [wishRequests, activeProfile.uid]
   );
 
   useEffect(() => {
@@ -256,6 +297,95 @@ export const VoucherSection: React.FC<{
     }
   };
 
+  const handleSubmitWishRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!wishTitle.trim() || isPreviewPerspective) return;
+    setSendingWish(true);
+    const id = generateId('wishreq');
+    const targetEmail =
+      allowedEmails.find((em) => em !== activeProfile.email.toLowerCase()) ||
+      activeProfile.email.toLowerCase();
+
+    try {
+      await setDoc(doc(db, 'wishRequests', id), {
+        id,
+        requesterUid: realMyUid,
+        requesterEmail: activeProfile.email.toLowerCase(),
+        requesterName: activeProfile.nickname,
+        targetEmail,
+        title: wishTitle.trim().slice(0, 60),
+        description: wishDesc.trim().slice(0, 300),
+        expiresAt: wishExpiresAt,
+        status: 'pending',
+        convertedVoucherId: '',
+        allowedEmails,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      setWishTitle('');
+      setWishDesc('');
+      setShowWishRequestModal(false);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `wishRequests/${id}`);
+    } finally {
+      setSendingWish(false);
+    }
+  };
+
+  const handleAcceptWishRequest = async (req: WishRequest) => {
+    if (isPreviewPerspective || respondingWishId) return;
+    setRespondingWishId(req.id);
+    const voucherId = generateId('voucher');
+    try {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'vouchers', voucherId), {
+        id: voucherId,
+        creatorUid: realMyUid,
+        creatorEmail: activeProfile.email.toLowerCase(),
+        creatorName: activeProfile.nickname,
+        recipientEmail: req.requesterEmail,
+        title: req.title.slice(0, 60),
+        description: req.description.slice(0, 300),
+        expiresAt: req.expiresAt || '',
+        status: 'active',
+        redeemCode: generate4DigitPin(),
+        qrToken: Math.random().toString(36).slice(2) + Date.now().toString(36),
+        redeemedAt: '',
+        redeemedMethod: '',
+        redeemedByUid: '',
+        allowedEmails,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      batch.update(doc(db, 'wishRequests', req.id), {
+        status: 'accepted',
+        convertedVoucherId: voucherId,
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
+      setSubTab('sent');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `wishRequests/${req.id}`);
+    } finally {
+      setRespondingWishId(null);
+    }
+  };
+
+  const handleDeclineWishRequest = async (req: WishRequest) => {
+    if (isPreviewPerspective || respondingWishId) return;
+    setRespondingWishId(req.id);
+    try {
+      await updateDoc(doc(db, 'wishRequests', req.id), {
+        status: 'declined',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `wishRequests/${req.id}`);
+    } finally {
+      setRespondingWishId(null);
+    }
+  };
+
   const handleVerifyPinRedeem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!redeemTarget || isPreviewPerspective) return;
@@ -326,17 +456,125 @@ export const VoucherSection: React.FC<{
         </div>
 
         {!isPreviewPerspective && (
-          <button
-            type="button"
-            onClick={() => setShowCreateModal(true)}
-            className="min-h-[44px] px-4 py-2.5 rounded-2xl text-sm font-semibold text-white shadow-sm inline-flex items-center justify-center gap-2 transition active:scale-[0.98] whitespace-nowrap shrink-0"
-            style={{ backgroundColor: 'var(--accent-500)' }}
-          >
-            <Plus className="h-4 w-4" />
-            製作願望券送給對方
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowWishRequestModal(true)}
+              className="min-h-[44px] px-4 py-2.5 rounded-2xl text-sm font-semibold glass-card border border-[var(--accent-500)]/40 text-[var(--accent-600)] dark:text-[var(--accent-400)] inline-flex items-center justify-center gap-2 transition active:scale-[0.98] whitespace-nowrap"
+            >
+              <Sparkles className="h-4 w-4" />
+              向對方許願
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCreateModal(true)}
+              className="min-h-[44px] px-4 py-2.5 rounded-2xl text-sm font-semibold text-white shadow-sm inline-flex items-center justify-center gap-2 transition active:scale-[0.98] whitespace-nowrap"
+              style={{ backgroundColor: 'var(--accent-500)' }}
+            >
+              <Plus className="h-4 w-4" />
+              製作願望券送給對方
+            </button>
+          </div>
         )}
       </div>
+
+      {/* 頂部「待回應的許願請求」卡片區 */}
+      {incomingPendingWishes.length > 0 && (
+        <div className="space-y-3">
+          {incomingPendingWishes.map((req) => {
+            const busy = respondingWishId === req.id;
+            return (
+              <motion.div
+                key={req.id}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="glass-card rounded-3xl p-5 border border-[var(--accent-500)]/45 shadow-lg space-y-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1 min-w-0">
+                    <span
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--accent-600)] dark:text-[var(--accent-400)]"
+                    >
+                      <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                      待回應的許願請求 · 來自 {req.requesterName}
+                    </span>
+                    <h3 className="text-base sm:text-lg font-bold tracking-tight break-words">
+                      {req.title}
+                    </h3>
+                    {req.description && (
+                      <p className="text-sm text-[var(--text-secondary)] leading-relaxed break-words">
+                        {req.description}
+                      </p>
+                    )}
+                    <p className="text-[11px] font-mono-tabular text-[var(--text-muted)]">
+                      期望期限：{req.expiresAt || '無期限'}
+                    </p>
+                  </div>
+                </div>
+
+                {!isPreviewPerspective && (
+                  <div className="flex items-center gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleDeclineWishRequest(req)}
+                      className="min-h-[42px] px-4 rounded-2xl glass-card text-xs font-semibold text-[var(--text-secondary)] hover:text-rose-400 inline-flex items-center justify-center gap-1.5 transition active:scale-[0.98] disabled:opacity-50"
+                    >
+                      <X className="h-4 w-4" />
+                      婉拒
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleAcceptWishRequest(req)}
+                      className="flex-1 min-h-[42px] px-4 rounded-2xl text-xs font-semibold text-white shadow inline-flex items-center justify-center gap-1.5 transition active:scale-[0.98] disabled:opacity-50"
+                      style={{ backgroundColor: 'var(--accent-500)' }}
+                    >
+                      <Check className="h-4 w-4" />
+                      {busy ? '處理中...' : '同意並自動轉為願望券'}
+                    </button>
+                  </div>
+                )}
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 我送出的等待回應中許願清單 */}
+      {myPendingWishes.length > 0 && (
+        <div className="glass-card rounded-2xl px-4 py-3 space-y-2">
+          <p className="text-xs font-semibold text-[var(--text-secondary)] flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-[var(--accent-500)]" />
+            已向對方許願，等待對方同意轉券（{myPendingWishes.length}）
+          </p>
+          <div className="space-y-1.5">
+            {myPendingWishes.map((req) => (
+              <div
+                key={req.id}
+                className="flex items-center justify-between gap-2 text-xs rounded-xl bg-black/[0.04] dark:bg-white/[0.04] px-3 py-2"
+              >
+                <span className="font-medium truncate">{req.title}</span>
+                {!isPreviewPerspective && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await deleteDoc(doc(db, 'wishRequests', req.id));
+                      } catch (err) {
+                        handleFirestoreError(err, OperationType.DELETE, `wishRequests/${req.id}`);
+                      }
+                    }}
+                    className="text-[11px] text-[var(--text-muted)] hover:text-rose-400 shrink-0"
+                  >
+                    收回
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center gap-1.5 p-1 rounded-2xl glass-card w-full sm:w-fit">
         {[
@@ -480,81 +718,181 @@ export const VoucherSection: React.FC<{
       )}
 
       {/* 製作願望券 Modal */}
-      <AnimatePresence>
-        {showCreateModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm p-4">
-            <motion.form
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 16 }}
-              onSubmit={handleCreateVoucher}
-              className="glass-card-strong w-full max-w-md rounded-3xl p-6 space-y-4"
-            >
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold">製作專屬願望券</h3>
-                <button
-                  type="button"
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {showCreateModal && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 pointer-events-auto">
+                <div
                   onClick={() => setShowCreateModal(false)}
-                  className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center text-[var(--text-muted)]"
+                  className="absolute inset-0 bg-black/55 backdrop-blur-sm"
+                  aria-hidden="true"
+                />
+                <motion.form
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 16 }}
+                  onSubmit={handleCreateVoucher}
+                  className="relative z-10 glass-card-strong w-full max-w-md rounded-3xl p-6 space-y-4 pointer-events-auto"
                 >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-bold">製作專屬願望券</h3>
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateModal(false)}
+                      className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center text-[var(--text-muted)]"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
 
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                  願望券標題
-                </label>
-                <input
-                  type="text"
-                  required
-                  maxLength={60}
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="例如：無條件抱抱 10 分鐘券"
-                  className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-3 text-sm outline-none"
-                />
-              </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      願望券標題
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={60}
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      placeholder="例如：無條件抱抱 10 分鐘券"
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-3 text-base sm:text-sm outline-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                  內容說明
-                </label>
-                <textarea
-                  rows={3}
-                  maxLength={300}
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="寫下使用說明或附註..."
-                  className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-3 text-sm outline-none resize-none"
-                />
-              </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      內容說明
+                    </label>
+                    <textarea
+                      rows={3}
+                      maxLength={300}
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      placeholder="寫下使用說明或附註..."
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-3 text-base sm:text-sm outline-none resize-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
-                  有效期限
-                </label>
-                <input
-                  type="date"
-                  required
-                  value={expiresAt}
-                  onChange={(e) => setExpiresAt(e.target.value)}
-                  className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-3 text-sm outline-none font-mono-tabular"
-                />
-              </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      有效期限
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={expiresAt}
+                      onChange={(e) => setExpiresAt(e.target.value)}
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-3 text-base sm:text-sm outline-none font-mono-tabular pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
 
-              <button
-                type="submit"
-                disabled={creating}
-                className="w-full min-h-[48px] rounded-2xl text-sm font-semibold text-white shadow transition active:scale-[0.98]"
-                style={{ backgroundColor: 'var(--accent-500)' }}
-              >
-                {creating ? '送出中...' : '送出到對方的票券夾'}
-              </button>
-            </motion.form>
-          </div>
+                  <button
+                    type="submit"
+                    disabled={creating}
+                    className="w-full min-h-[48px] rounded-2xl text-sm font-semibold text-white shadow transition active:scale-[0.98]"
+                    style={{ backgroundColor: 'var(--accent-500)' }}
+                  >
+                    {creating ? '送出中...' : '送出到對方的票券夾'}
+                  </button>
+                </motion.form>
+              </div>
+            )}
+          </AnimatePresence>,
+          document.body
         )}
-      </AnimatePresence>
+
+      {/* 向對方許願 Modal */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {showWishRequestModal && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 pointer-events-auto">
+                <div
+                  onClick={() => setShowWishRequestModal(false)}
+                  className="absolute inset-0 bg-black/55 backdrop-blur-sm"
+                  aria-hidden="true"
+                />
+                <motion.form
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 16 }}
+                  onSubmit={handleSubmitWishRequest}
+                  className="relative z-10 glass-card-strong w-full max-w-md rounded-3xl p-6 space-y-4 pointer-events-auto"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold">向對方許下一個願望</h3>
+                      <p className="text-[11px] text-[var(--text-muted)]">
+                        對方同意後，將自動轉為你的專屬未使用願望券
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowWishRequestModal(false)}
+                      className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center text-[var(--text-muted)]"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      許願標題
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={60}
+                      value={wishTitle}
+                      onChange={(e) => setWishTitle(e.target.value)}
+                      placeholder="例如：陪我去吃巷口那家深夜拉麵"
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-3 text-base sm:text-sm outline-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      許願內容說明
+                    </label>
+                    <textarea
+                      rows={3}
+                      maxLength={300}
+                      value={wishDesc}
+                      onChange={(e) => setWishDesc(e.target.value)}
+                      placeholder="寫下希望對方幫你完成的心願細節..."
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-3 text-base sm:text-sm outline-none resize-none pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
+                      期望兌換期限
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={wishExpiresAt}
+                      onChange={(e) => setWishExpiresAt(e.target.value)}
+                      className="w-full rounded-2xl border border-[var(--border-glass)] bg-white/65 dark:bg-black/25 px-4 py-3 text-base sm:text-sm outline-none font-mono-tabular pointer-events-auto select-text touch-manipulation"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={sendingWish || !wishTitle.trim()}
+                    className="w-full min-h-[48px] rounded-2xl text-sm font-semibold text-white shadow transition active:scale-[0.98] disabled:opacity-50"
+                    style={{ backgroundColor: 'var(--accent-500)' }}
+                  >
+                    {sendingWish ? '送出許願中...' : '送出許願請求給對方'}
+                  </button>
+                </motion.form>
+              </div>
+            )}
+          </AnimatePresence>,
+          document.body
+        )}
 
       {/* 收券人核銷視窗 */}
       <AnimatePresence>

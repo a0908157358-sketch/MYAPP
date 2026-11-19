@@ -194,7 +194,10 @@ service cloud.firestore {
         data.mode in ['text', 'draw'] &&
         data.textContent is string && data.textContent.size() <= 600 &&
         data.fontSize in ['sm', 'md', 'lg'] &&
-        data.chalkColor in ['white', 'pink', 'blue', 'yellow'] &&
+        data.chalkColor is string && data.chalkColor.size() >= 1 && data.chalkColor.size() <= 20 && (
+          data.chalkColor in ['white', 'pink', 'blue', 'yellow', 'mint'] ||
+          data.chalkColor.matches('^#[0-9A-Fa-f]{6}$')
+        ) &&
         data.drawingDataUrl is string && data.drawingDataUrl.size() <= 350000 &&
         isValidAllowedEmails(data.allowedEmails) &&
         data.createdAt is timestamp &&
@@ -571,7 +574,30 @@ service cloud.firestore {
       allow delete: if isValidId(memoId) && isCoupleMember() && userEmail() in existing().allowedEmails;
     }
 
-    // 10. 24-Hour Ephemeral IG-Style Snap Stories
+    // 10. 24-Hour Ephemeral IG-Style Snap Stories (with unread tracking & replies)
+    function isValidSeenByUids(uids) {
+      return uids is list &&
+        uids.size() <= 4 &&
+        (uids.size() == 0 || (uids[0] is string && uids[0].size() >= 1 && uids[0].size() <= 128));
+    }
+
+    function isValidSnapReplyItem(item) {
+      return item is map &&
+        item.keys().hasAll(['id', 'senderUid', 'senderName', 'text', 'createdAtMs']) &&
+        item.keys().hasOnly(['id', 'senderUid', 'senderName', 'text', 'createdAtMs']) &&
+        isValidId(item.id) &&
+        item.senderUid is string && item.senderUid.size() >= 1 && item.senderUid.size() <= 128 &&
+        item.senderName is string && item.senderName.size() >= 1 && item.senderName.size() <= 30 &&
+        item.text is string && item.text.size() >= 1 && item.text.size() <= 200 &&
+        item.createdAtMs is number && item.createdAtMs > 0;
+    }
+
+    function isValidSnapReplies(replies) {
+      return replies is list &&
+        replies.size() <= 30 &&
+        (replies.size() == 0 || isValidSnapReplyItem(replies[0]));
+    }
+
     function isValidSnap(data) {
       return data.keys().hasAll([
           'id', 'photoDataUrl', 'caption', 'creatorUid', 'creatorName',
@@ -579,7 +605,8 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'id', 'photoDataUrl', 'caption', 'creatorUid', 'creatorName',
-          'createdAtMs', 'expiresAtMs', 'allowedEmails', 'createdAt', 'updatedAt'
+          'createdAtMs', 'expiresAtMs', 'seenByUids', 'replies',
+          'allowedEmails', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.id) &&
         data.photoDataUrl is string && data.photoDataUrl.size() >= 10 && data.photoDataUrl.size() <= 450000 &&
@@ -588,6 +615,8 @@ service cloud.firestore {
         data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 30 &&
         data.createdAtMs is number && data.createdAtMs > 0 &&
         data.expiresAtMs is number && data.expiresAtMs > data.createdAtMs &&
+        (!('seenByUids' in data) || isValidSeenByUids(data.seenByUids)) &&
+        (!('replies' in data) || isValidSnapReplies(data.replies)) &&
         isValidAllowedEmails(data.allowedEmails) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -611,8 +640,83 @@ service cloud.firestore {
         incoming().creatorUid == existing().creatorUid &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt']);
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['replies', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['seenByUids', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['replies', 'seenByUids', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
+        );
       allow delete: if isValidId(snapId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+    }
+
+    // 11. Two-Way Wish Requests (convert to WishVoucher when accepted)
+    function isValidWishRequest(data) {
+      return data.keys().hasAll([
+          'id', 'requesterUid', 'requesterEmail', 'requesterName', 'targetEmail',
+          'title', 'description', 'expiresAt', 'status', 'convertedVoucherId',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'requesterUid', 'requesterEmail', 'requesterName', 'targetEmail',
+          'title', 'description', 'expiresAt', 'status', 'convertedVoucherId',
+          'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.requesterUid is string && data.requesterUid.size() >= 1 && data.requesterUid.size() <= 128 &&
+        data.requesterEmail is string && data.requesterEmail.size() >= 3 && data.requesterEmail.size() <= 120 &&
+        data.requesterName is string && data.requesterName.size() >= 1 && data.requesterName.size() <= 30 &&
+        data.targetEmail is string && data.targetEmail.size() >= 3 && data.targetEmail.size() <= 120 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 60 &&
+        data.description is string && data.description.size() <= 300 &&
+        isDateString(data.expiresAt) &&
+        data.status in ['pending', 'accepted', 'declined'] &&
+        data.convertedVoucherId is string && data.convertedVoucherId.size() <= 128 &&
+        isValidAllowedEmails(data.allowedEmails) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /wishRequests/{requestId} {
+      allow get: if isValidId(requestId) && isCoupleMember() && userEmail() in existing().allowedEmails;
+      allow list: if isVerifiedUser() && userEmail() in resource.data.allowedEmails;
+      allow create: if isValidId(requestId) &&
+        isCoupleMember() &&
+        isValidWishRequest(incoming()) &&
+        incoming().id == requestId &&
+        incoming().requesterUid == request.auth.uid &&
+        incoming().requesterEmail.lower() == userEmail() &&
+        incoming().status == 'pending' &&
+        incoming().convertedVoucherId == '' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(requestId) &&
+        isCoupleMember() &&
+        userEmail() in existing().allowedEmails &&
+        existing().status == 'pending' &&
+        isValidWishRequest(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().requesterUid == existing().requesterUid &&
+        incoming().requesterEmail == existing().requesterEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            incoming().status == 'accepted' &&
+            incoming().convertedVoucherId.size() >= 1 &&
+            incoming().requesterUid != request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'convertedVoucherId', 'updatedAt'])
+          ) ||
+          (
+            incoming().status == 'declined' &&
+            incoming().requesterUid != request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          (
+            incoming().status == 'pending' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(requestId) && isCoupleMember() && userEmail() in existing().allowedEmails;
     }
   }
 }
