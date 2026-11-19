@@ -37,13 +37,68 @@ export interface FirestoreErrorInfo {
   };
 }
 
+export interface FirestoreErrorResult {
+  info: FirestoreErrorInfo;
+  isQuotaExceeded: boolean;
+  isOfflineOrUnavailable: boolean;
+  isPermissionDenied: boolean;
+}
+
+type FirestoreErrorListener = (result: FirestoreErrorResult) => void;
+const errorListeners = new Set<FirestoreErrorListener>();
+
+export function subscribeFirestoreError(listener: FirestoreErrorListener): () => void {
+  errorListeners.add(listener);
+  return () => {
+    errorListeners.delete(listener);
+  };
+}
+
+export function classifyFirestoreError(error: unknown): {
+  message: string;
+  isQuotaExceeded: boolean;
+  isOfflineOrUnavailable: boolean;
+  isPermissionDenied: boolean;
+} {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const lower = rawMessage.toLowerCase();
+
+  const isQuotaExceeded =
+    lower.includes('quota') ||
+    lower.includes('resource-exhausted') ||
+    lower.includes('resource exhausted');
+
+  const isOfflineOrUnavailable =
+    lower.includes('offline') ||
+    lower.includes('unavailable') ||
+    lower.includes('network') ||
+    lower.includes('deadline-exceeded');
+
+  const isPermissionDenied =
+    lower.includes('permission-denied') ||
+    lower.includes('permission denied') ||
+    lower.includes('insufficient permissions');
+
+  return {
+    message: rawMessage,
+    isQuotaExceeded,
+    isOfflineOrUnavailable,
+    isPermissionDenied,
+  };
+}
+
+/**
+ * 安全記錄 Firestore 錯誤並通知介面進行離線／本地降級，
+ * 不再直接 throw Error 導致 Uncaught Error 或畫面卡死。
+ */
 export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null
-): never {
+): FirestoreErrorResult {
+  const classified = classifyFirestoreError(error);
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: classified.message,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -59,8 +114,25 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+
+  console.warn('[Firestore Safe Handler]', errInfo);
+
+  const result: FirestoreErrorResult = {
+    info: errInfo,
+    isQuotaExceeded: classified.isQuotaExceeded,
+    isOfflineOrUnavailable: classified.isOfflineOrUnavailable,
+    isPermissionDenied: classified.isPermissionDenied,
+  };
+
+  errorListeners.forEach((listener) => {
+    try {
+      listener(result);
+    } catch {
+      // 忽略訂閱者內部錯誤
+    }
+  });
+
+  return result;
 }
 
 export async function testFirestoreConnection(): Promise<boolean> {
@@ -68,11 +140,11 @@ export async function testFirestoreConnection(): Promise<boolean> {
     await getDocFromServer(doc(db, 'test', 'connection'));
     return true;
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('請檢查您的 Firebase 設定，目前無法連線至 Firestore。');
+    const classified = classifyFirestoreError(error);
+    if (classified.isOfflineOrUnavailable || classified.isQuotaExceeded) {
+      console.warn('Firestore 目前無法連線或額度受限，將切換至本地檢視模式。');
       return false;
     }
-    // 若僅因尚未登入而回傳 permission-denied，仍代表網路與設定可正常連線
     return true;
   }
 }

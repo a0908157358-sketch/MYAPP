@@ -239,7 +239,8 @@ export const WishlistAndCapsuleSection: React.FC<{
   capsules: TimeCapsuleLetter[];
   allowedEmails: string[];
   accentHex: string;
-}> = ({ myProfile, wishlistItems, capsules, allowedEmails, accentHex }) => {
+  onRefreshData?: () => void;
+}> = ({ myProfile, wishlistItems, capsules, allowedEmails, accentHex, onRefreshData }) => {
   const [subMode, setSubMode] = useState<'wishlist' | 'capsule'>('wishlist');
   const [dropTriggerKey, setDropTriggerKey] = useState(0);
 
@@ -292,6 +293,7 @@ export const WishlistAndCapsuleSection: React.FC<{
       });
       setWishTitle('');
       setWishNote('');
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `wishlist/${id}`);
     } finally {
@@ -310,6 +312,7 @@ export const WishlistAndCapsuleSection: React.FC<{
         completedAt: nextCompleted ? new Date().toISOString().slice(0, 10) : '',
         updatedAt: serverTimestamp(),
       });
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `wishlist/${item.id}`);
     }
@@ -342,6 +345,7 @@ export const WishlistAndCapsuleSection: React.FC<{
       setCapTitle('');
       setCapContent('');
       setShowCreateCapsule(false);
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `capsules/${id}`);
     } finally {
@@ -359,6 +363,7 @@ export const WishlistAndCapsuleSection: React.FC<{
           openedAtIso: new Date().toISOString(),
           updatedAt: serverTimestamp(),
         });
+        onRefreshData?.();
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `capsules/${cap.id}`);
       }
@@ -518,6 +523,7 @@ export const WishlistAndCapsuleSection: React.FC<{
                       onClick={async () => {
                         try {
                           await deleteDoc(doc(db, 'wishlist', item.id));
+                          onRefreshData?.();
                         } catch (err) {
                           handleFirestoreError(err, OperationType.DELETE, `wishlist/${item.id}`);
                         }
@@ -635,6 +641,7 @@ export const WishlistAndCapsuleSection: React.FC<{
                         onClick={async () => {
                           try {
                             await deleteDoc(doc(db, 'capsules', cap.id));
+                            onRefreshData?.();
                           } catch (err) {
                             handleFirestoreError(err, OperationType.DELETE, `capsules/${cap.id}`);
                           }

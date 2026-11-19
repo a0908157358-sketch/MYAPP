@@ -10,6 +10,8 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
+  limit,
   onSnapshot,
   query,
   serverTimestamp,
@@ -39,7 +41,7 @@ import {
   googleProvider,
   handleFirestoreError,
   OperationType,
-  testFirestoreConnection,
+  subscribeFirestoreError,
 } from './lib/firebase';
 import {
   ChalkboardData,
@@ -94,6 +96,65 @@ const NAV_ITEMS: { id: ActiveTab; label: string; icon: React.ComponentType<{ cla
   { id: 'settings', label: '設定', icon: Settings },
 ];
 
+function safeReadCache<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function safeWriteCache(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // 忽略容量上限或私密瀏覽寫入失敗
+  }
+}
+
+function buildFallbackCoupleSpace(uid: string, email: string): CoupleSpace {
+  const emailLower = email.trim().toLowerCase();
+  const initialAllowed = Array.from(
+    new Set(ALLOWED_EMAILS.map((e) => e.trim().toLowerCase()))
+  );
+  if (emailLower && !initialAllowed.includes(emailLower)) {
+    initialAllowed.push(emailLower);
+  }
+  return {
+    partner1Email: initialAllowed[0] || emailLower,
+    partner2Email: initialAllowed[1] || 'yu67428@gmail.com',
+    allowedEmails: initialAllowed,
+    ...DEFAULT_KEY_DATES,
+    spaceTitle: '嶼你 · 雙人絲絨空間',
+    pinEnabled: false,
+    pinCode: '',
+    updatedBy: uid,
+  };
+}
+
+function buildFallbackPartnerProfile(currentUser: User): PartnerProfile {
+  const emailLower = (currentUser.email || '').trim().toLowerCase();
+  const fallbackName =
+    currentUser.displayName?.trim() || emailLower.split('@')[0] || '我';
+  const allowed = Array.from(
+    new Set(ALLOWED_EMAILS.map((e) => e.trim().toLowerCase()))
+  );
+  if (emailLower && !allowed.includes(emailLower)) {
+    allowed.push(emailLower);
+  }
+  return {
+    uid: currentUser.uid,
+    email: emailLower,
+    role: 'custom',
+    roleLabel: fallbackName.slice(0, 20),
+    nickname: fallbackName.slice(0, 30),
+    avatarDataUrl: currentUser.photoURL || '',
+    allowedEmails: allowed,
+  };
+}
+
 function CoupleAppShell() {
   const isOnline = useOnlineStatus();
 
@@ -103,24 +164,21 @@ function CoupleAppShell() {
     return saved === 'dark' ? 'dark' : 'light';
   });
   const [customPalette, setCustomPalette] = useState<CustomPalette>(() => {
-    try {
-      const raw = localStorage.getItem('cove_custom_palette_v1');
-      if (raw) {
-        const parsed = JSON.parse(raw) as Partial<CustomPalette>;
-        if (
-          typeof parsed.lightBg === 'string' &&
-          typeof parsed.darkBg === 'string' &&
-          typeof parsed.accent === 'string'
-        ) {
-          return {
-            lightBg: parsed.lightBg,
-            darkBg: parsed.darkBg,
-            accent: parsed.accent,
-          };
-        }
-      }
-    } catch {
-      // 忽略損壞的本地設定，退回預設值
+    const parsed = safeReadCache<Partial<CustomPalette> | null>(
+      'cove_custom_palette_v1',
+      null
+    );
+    if (
+      parsed &&
+      typeof parsed.lightBg === 'string' &&
+      typeof parsed.darkBg === 'string' &&
+      typeof parsed.accent === 'string'
+    ) {
+      return {
+        lightBg: parsed.lightBg,
+        darkBg: parsed.darkBg,
+        accent: parsed.accent,
+      };
     }
     return DEFAULT_CUSTOM_PALETTE;
   });
@@ -133,6 +191,12 @@ function CoupleAppShell() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [blockedEmail, setBlockedEmail] = useState<string | null>(null);
   const [pinUnlocked, setPinUnlocked] = useState(false);
+
+  // 雲端同步降級／安全解鎖狀態：確保即便 Quota exceeded 或網路失敗也不卡畫面
+  const [cloudSyncDegraded, setCloudSyncDegraded] = useState(false);
+  const [dismissedSyncBanner, setDismissedSyncBanner] = useState(false);
+  const [partnersSyncedFromCloud, setPartnersSyncedFromCloud] = useState(false);
+  const [syncResolved, setSyncResolved] = useState(false);
 
   const [coupleSpace, setCoupleSpace] = useState<CoupleSpace | null>(null);
   const [partners, setPartners] = useState<PartnerProfile[]>([]);
@@ -150,6 +214,9 @@ function CoupleAppShell() {
   const partnersRef = useRef<PartnerProfile[]>([]);
   const coupleSpaceRef = useRef<CoupleSpace | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const loadedOnDemandColsRef = useRef<Record<string, boolean>>({});
+  const userUid = user?.uid || '';
+  const userEmail = user?.email || '';
 
   useEffect(() => {
     partnersRef.current = partners;
@@ -188,62 +255,166 @@ function CoupleAppShell() {
     return otherEmail ? otherEmail.split('@')[0] : '親愛的';
   }, []);
 
+  const showToastRef = useRef(showToast);
+  const getPartnerDisplayNameRef = useRef(getPartnerDisplayName);
+  useEffect(() => {
+    showToastRef.current = showToast;
+  }, [showToast]);
+  useEffect(() => {
+    getPartnerDisplayNameRef.current = getPartnerDisplayName;
+  }, [getPartnerDisplayName]);
+
   useEffect(() => {
     applyCustomPaletteToDocument(customPalette, colorMode);
     localStorage.setItem('cove_color_mode_v3', colorMode);
-    localStorage.setItem('cove_custom_palette_v1', JSON.stringify(customPalette));
+    safeWriteCache('cove_custom_palette_v1', customPalette);
   }, [colorMode, customPalette]);
 
+  // 訂閱全域 Firestore 安全錯誤，遇配額上限或離線時立即安全降級而不中斷程式
   useEffect(() => {
-    testFirestoreConnection();
+    return subscribeFirestoreError((result) => {
+      if (result.isQuotaExceeded || result.isOfflineOrUnavailable) {
+        setCloudSyncDegraded(true);
+        setSyncResolved(true);
+        setCoupleSpace((prev) => {
+          if (prev) return prev;
+          if (!userUid) return prev;
+          return (
+            safeReadCache<CoupleSpace | null>(`cove_space_cache_${userUid}`, null) ||
+            buildFallbackCoupleSpace(userUid, userEmail)
+          );
+        });
+      }
+    });
+  }, [userUid, userEmail]);
+
+  useEffect(() => {
+    let resolved = false;
+    const authSafetyTimer = window.setTimeout(() => {
+      if (!resolved) {
+        setAuthReady(true);
+      }
+    }, 4000);
+
+    const unsub = onAuthStateChanged(
+      auth,
+      async (currentUser) => {
+        resolved = true;
+        window.clearTimeout(authSafetyTimer);
+
+        if (!currentUser) {
+          setUser(null);
+          setAuthReady(true);
+          return;
+        }
+
+        const emailLower = (currentUser.email || '').trim().toLowerCase();
+        const staticAllowed = ALLOWED_EMAILS.map((e) => e.trim().toLowerCase());
+        let isAuthorized = staticAllowed.includes(emailLower);
+
+        if (!isAuthorized) {
+          try {
+            const snap = await getDoc(doc(db, 'coupleSpace', COUPLE_SPACE_DOC_ID));
+            if (snap.exists()) {
+              const data = snap.data() as CoupleSpace;
+              if (Array.isArray(data.allowedEmails) && data.allowedEmails.includes(emailLower)) {
+                isAuthorized = true;
+              }
+            }
+          } catch {
+            // 無權讀取或額度受限時保持安全檢查
+          }
+        }
+
+        if (!isAuthorized) {
+          setBlockedEmail(currentUser.email || '未知帳號');
+          await signOut(auth);
+          setUser(null);
+          setAuthReady(true);
+          return;
+        }
+
+        setBlockedEmail(null);
+        setUser(currentUser);
+        setAuthReady(true);
+      },
+      (err) => {
+        resolved = true;
+        window.clearTimeout(authSafetyTimer);
+        console.warn('[Auth State Error]', err);
+        setAuthReady(true);
+      }
+    );
+
+    return () => {
+      window.clearTimeout(authSafetyTimer);
+      unsub();
+    };
   }, []);
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (currentUser) => {
-      if (!currentUser) {
-        setUser(null);
-        setAuthReady(true);
-        return;
-      }
+  // 按需載入（getDocs + limit(30)）：僅在進入對應分頁或操作異動時讀取，大幅降低每日讀取次數
+  const loadCollectionOnDemand = useCallback(
+    async <T,>(
+      colName: string,
+      setter: React.Dispatch<React.SetStateAction<T[]>>,
+      force = false
+    ) => {
+      if (!authReady || !userUid || !userEmail) return;
+      if (!force && loadedOnDemandColsRef.current[colName]) return;
 
-      const emailLower = (currentUser.email || '').trim().toLowerCase();
-      const staticAllowed = ALLOWED_EMAILS.map((e) => e.trim().toLowerCase());
-      let isAuthorized = staticAllowed.includes(emailLower);
+      const emailLower = userEmail.trim().toLowerCase();
+      const cacheKey = `cove_col_${colName}_${userUid}`;
 
-      if (!isAuthorized) {
-        try {
-          const snap = await getDoc(doc(db, 'coupleSpace', COUPLE_SPACE_DOC_ID));
-          if (snap.exists()) {
-            const data = snap.data() as CoupleSpace;
-            if (Array.isArray(data.allowedEmails) && data.allowedEmails.includes(emailLower)) {
-              isAuthorized = true;
-            }
-          }
-        } catch {
-          // 無權讀取代表非白名單成員
+      try {
+        const q = query(
+          collection(db, colName),
+          where('allowedEmails', 'array-contains', emailLower),
+          limit(30)
+        );
+        const snap = await getDocs(q);
+        const docs = snap.docs.map((d) => d.data() as T);
+        setter(docs);
+        loadedOnDemandColsRef.current[colName] = true;
+        safeWriteCache(cacheKey, docs);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.LIST, colName);
+        setCloudSyncDegraded(true);
+        const cached = safeReadCache<T[]>(cacheKey, []);
+        if (cached.length > 0) {
+          setter(cached);
         }
       }
+    },
+    [authReady, userUid, userEmail]
+  );
 
-      if (!isAuthorized) {
-        setBlockedEmail(currentUser.email || '未知帳號');
-        await signOut(auth);
-        setUser(null);
-        setAuthReady(true);
-        return;
-      }
-
-      setBlockedEmail(null);
-      setUser(currentUser);
-      setAuthReady(true);
-    });
-
-    return () => unsub();
-  }, []);
-
+  // 切換分頁時才按需讀取 vouchers / timeline / polaroids / wishlist / capsules
   useEffect(() => {
-    if (!authReady || !user || !user.email) return;
+    if (!authReady || !userUid || !userEmail) return;
 
-    const emailLower = user.email.trim().toLowerCase();
+    if (activeTab === 'board') {
+      void loadCollectionOnDemand<WishVoucher>('vouchers', setVouchers);
+    } else if (activeTab === 'story') {
+      void loadCollectionOnDemand<TimelineNode>('timeline', setTimelineNodes);
+      void loadCollectionOnDemand<PolaroidPhoto>('polaroids', setPolaroids);
+    } else if (activeTab === 'wishlist') {
+      void loadCollectionOnDemand<WishlistItem>('wishlist', setWishlistItems);
+      void loadCollectionOnDemand<TimeCapsuleLetter>('capsules', setCapsules);
+    }
+  }, [activeTab, authReady, userUid, userEmail, loadCollectionOnDemand]);
+
+  // 核心即時同步監聽：僅依賴穩定基礎值 [authReady, userUid, userEmail]，避免重複建立監聽導致讀取爆炸
+  useEffect(() => {
+    if (!authReady || !userUid || !userEmail) {
+      setCoupleSpace(null);
+      setPartners([]);
+      setSyncResolved(false);
+      setPartnersSyncedFromCloud(false);
+      loadedOnDemandColsRef.current = {};
+      return;
+    }
+
+    const emailLower = userEmail.trim().toLowerCase();
     const initialAllowed = Array.from(
       new Set(ALLOWED_EMAILS.map((e) => e.trim().toLowerCase()))
     );
@@ -251,11 +422,67 @@ function CoupleAppShell() {
       initialAllowed.push(emailLower);
     }
 
+    // 先讀取本地快取（若存在）讓畫面能瞬開並避免卡住
+    const cachedSpace = safeReadCache<CoupleSpace | null>(
+      `cove_space_cache_${userUid}`,
+      null
+    );
+    if (cachedSpace) {
+      setCoupleSpace(cachedSpace);
+    }
+    const cachedPartners = safeReadCache<PartnerProfile[]>(
+      `cove_partners_cache_${userUid}`,
+      []
+    );
+    if (cachedPartners.length > 0) {
+      setPartners(cachedPartners);
+    }
+    setVouchers(safeReadCache<WishVoucher[]>(`cove_col_vouchers_${userUid}`, []));
+    setWishlistItems(safeReadCache<WishlistItem[]>(`cove_col_wishlist_${userUid}`, []));
+    setTimelineNodes(safeReadCache<TimelineNode[]>(`cove_col_timeline_${userUid}`, []));
+    setPolaroids(safeReadCache<PolaroidPhoto[]>(`cove_col_polaroids_${userUid}`, []));
+    setCapsules(safeReadCache<TimeCapsuleLetter[]>(`cove_col_capsules_${userUid}`, []));
+
+    // 3.5 秒安全超時保護：即使雲端完全無回應或額度卡住，也保證解除載入畫面進入離線/本地檢視模式
+    const unblockTimer = window.setTimeout(() => {
+      setCoupleSpace((prev) => prev || buildFallbackCoupleSpace(userUid, userEmail));
+      setCloudSyncDegraded(true);
+      setSyncResolved(true);
+    }, 3500);
+
     const spaceRef = doc(db, 'coupleSpace', COUPLE_SPACE_DOC_ID);
-    getDoc(spaceRef)
-      .then(async (snap) => {
-        if (!snap.exists()) {
-          await setDoc(spaceRef, {
+    let initializedSpaceAttempted = false;
+
+    const unsubSpace = onSnapshot(
+      spaceRef,
+      (snap) => {
+        window.clearTimeout(unblockTimer);
+        setSyncResolved(true);
+        if (snap.exists()) {
+          const data = snap.data() as CoupleSpace;
+          setCoupleSpace(data);
+          setCloudSyncDegraded(false);
+          safeWriteCache(`cove_space_cache_${userUid}`, data);
+
+          if (
+            !initializedSpaceAttempted &&
+            data.partner2Email === 'partner2@gmail.com' &&
+            initialAllowed[1] &&
+            initialAllowed[1] !== 'partner2@gmail.com'
+          ) {
+            initializedSpaceAttempted = true;
+            updateDoc(spaceRef, {
+              partner2Email: initialAllowed[1],
+              allowedEmails: initialAllowed,
+              updatedBy: userUid,
+              updatedAt: serverTimestamp(),
+            }).catch((err) =>
+              handleFirestoreError(err, OperationType.UPDATE, `coupleSpace/${COUPLE_SPACE_DOC_ID}`)
+            );
+          }
+        } else if (!initializedSpaceAttempted) {
+          initializedSpaceAttempted = true;
+          const newSpace: CoupleSpace = {
             partner1Email: initialAllowed[0] || emailLower,
             partner2Email: initialAllowed[1] || 'yu67428@gmail.com',
             allowedEmails: initialAllowed,
@@ -263,40 +490,28 @@ function CoupleAppShell() {
             spaceTitle: '嶼你 · 雙人絲絨空間',
             pinEnabled: false,
             pinCode: '',
-            updatedBy: user.uid,
+            updatedBy: userUid,
+          };
+          setCoupleSpace(newSpace);
+          setDoc(spaceRef, {
+            ...newSpace,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
+          }).catch((err) => {
+            handleFirestoreError(err, OperationType.CREATE, `coupleSpace/${COUPLE_SPACE_DOC_ID}`);
+            setCloudSyncDegraded(true);
           });
-        } else {
-          // 若舊資料仍殘留範例信箱，自動升級同步為 yu67428@gmail.com
-          const existing = snap.data() as CoupleSpace;
-          if (
-            existing.partner2Email === 'partner2@gmail.com' &&
-            initialAllowed[1] &&
-            initialAllowed[1] !== 'partner2@gmail.com'
-          ) {
-            await updateDoc(spaceRef, {
-              partner2Email: initialAllowed[1],
-              allowedEmails: initialAllowed,
-              updatedBy: user.uid,
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-      })
-      .catch((err) =>
-        handleFirestoreError(err, OperationType.GET, `coupleSpace/${COUPLE_SPACE_DOC_ID}`)
-      );
-
-    const unsubSpace = onSnapshot(
-      spaceRef,
-      (snap) => {
-        if (snap.exists()) {
-          setCoupleSpace(snap.data() as CoupleSpace);
         }
       },
-      (err) =>
-        handleFirestoreError(err, OperationType.GET, `coupleSpace/${COUPLE_SPACE_DOC_ID}`)
+      (err) => {
+        window.clearTimeout(unblockTimer);
+        handleFirestoreError(err, OperationType.GET, `coupleSpace/${COUPLE_SPACE_DOC_ID}`);
+        setCloudSyncDegraded(true);
+        setSyncResolved(true);
+        setCoupleSpace(
+          (prev) => prev || cachedSpace || buildFallbackCoupleSpace(userUid, userEmail)
+        );
+      }
     );
 
     const hydratedCols: Record<string, boolean> = {};
@@ -305,18 +520,22 @@ function CoupleAppShell() {
 
     const watchCollection = <T,>(
       colName: string,
+      maxDocs: number,
       setter: React.Dispatch<React.SetStateAction<T[]>>,
-      onLiveChanges?: (changes: ReturnType<typeof snapChangesFallback>) => void
+      onLiveChanges?: (changes: { type: 'added' | 'modified' | 'removed'; data: unknown }[]) => void,
+      onHydrated?: (docs: T[]) => void
     ) => {
       const q = query(
         collection(db, colName),
-        where('allowedEmails', 'array-contains', emailLower)
+        where('allowedEmails', 'array-contains', emailLower),
+        limit(maxDocs)
       );
       return onSnapshot(
         q,
         (snap) => {
           const docs = snap.docs.map((d) => d.data() as T);
           setter(docs);
+          onHydrated?.(docs);
 
           if (!hydratedCols[colName]) {
             hydratedCols[colName] = true;
@@ -326,7 +545,7 @@ function CoupleAppShell() {
               });
             } else if (colName === 'partners') {
               const other = (docs as unknown as PartnerProfile[]).find(
-                (p) => p.uid !== user.uid
+                (p) => p.uid !== userUid
               );
               if (other) {
                 prevPartnerMoodKey = {
@@ -347,44 +566,52 @@ function CoupleAppShell() {
             );
           }
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, colName)
+        (err) => {
+          handleFirestoreError(err, OperationType.LIST, colName);
+          setCloudSyncDegraded(true);
+        }
       );
     };
 
-    function snapChangesFallback() {
-      return [] as { type: 'added' | 'modified' | 'removed'; data: unknown }[];
-    }
+    const unsubPartners = watchCollection<PartnerProfile>(
+      'partners',
+      4,
+      setPartners,
+      (changes) => {
+        changes.forEach((c) => {
+          if (c.type !== 'modified') return;
+          const d = c.data as PartnerProfile;
+          if (d.uid === userUid) return;
+          const moodKey = `${d.moodEmoji || ''}|${d.moodText || ''}`;
+          if (
+            prevPartnerMoodKey &&
+            prevPartnerMoodKey.uid === d.uid &&
+            prevPartnerMoodKey.key !== moodKey &&
+            (d.moodEmoji || d.moodText)
+          ) {
+            const pName = d.nickname || getPartnerDisplayNameRef.current(userUid);
+            showToastRef.current({
+              title: `${pName} 切換了今日心情`,
+              message: `${d.moodEmoji || '✨'} ${d.moodText || '更新了目前狀態'}`,
+              tab: 'home',
+            });
+          }
+          prevPartnerMoodKey = { uid: d.uid, key: moodKey };
+        });
+      },
+      (docs) => {
+        setPartnersSyncedFromCloud(true);
+        safeWriteCache(`cove_partners_cache_${userUid}`, docs);
+      }
+    );
 
-    const unsubPartners = watchCollection<PartnerProfile>('partners', setPartners, (changes) => {
-      changes.forEach((c) => {
-        if (c.type !== 'modified') return;
-        const d = c.data as PartnerProfile;
-        if (d.uid === user.uid) return;
-        const moodKey = `${d.moodEmoji || ''}|${d.moodText || ''}`;
-        if (
-          prevPartnerMoodKey &&
-          prevPartnerMoodKey.uid === d.uid &&
-          prevPartnerMoodKey.key !== moodKey &&
-          (d.moodEmoji || d.moodText)
-        ) {
-          const pName = d.nickname || getPartnerDisplayName(user.uid);
-          showToast({
-            title: `${pName} 切換了今日心情`,
-            message: `${d.moodEmoji || '✨'} ${d.moodText || '更新了目前狀態'}`,
-            tab: 'home',
-          });
-        }
-        prevPartnerMoodKey = { uid: d.uid, key: moodKey };
-      });
-    });
-
-    const unsubChalk = watchCollection<ChalkboardData>('chalkboards', setChalkboards, (changes) => {
+    const unsubChalk = watchCollection<ChalkboardData>('chalkboards', 4, setChalkboards, (changes) => {
       changes.forEach((c) => {
         if (c.type === 'removed') return;
         const d = c.data as ChalkboardData;
-        if (d.ownerUid === user.uid) return;
-        const pName = getPartnerDisplayName(user.uid);
-        showToast({
+        if (d.ownerUid === userUid) return;
+        const pName = getPartnerDisplayNameRef.current(userUid);
+        showToastRef.current({
           title: `${pName} 更新了小黑板`,
           message:
             d.mode === 'draw'
@@ -397,95 +624,13 @@ function CoupleAppShell() {
       });
     });
 
-    const unsubVouchers = watchCollection<WishVoucher>('vouchers', setVouchers, (changes) => {
-      changes.forEach((c) => {
-        const d = c.data as WishVoucher;
-        if (c.type === 'added' && d.creatorUid !== user.uid) {
-          const pName = getPartnerDisplayName(user.uid, d.creatorName);
-          showToast({
-            title: `${pName} 送了一張願望券給你`,
-            message: `「${d.title}」已放進你的願望券夾 🎟️`,
-            tab: 'board',
-          });
-        } else if (
-          c.type === 'modified' &&
-          d.status === 'redeemed' &&
-          d.redeemedByUid &&
-          d.redeemedByUid !== user.uid
-        ) {
-          const pName = getPartnerDisplayName(user.uid);
-          showToast({
-            title: `${pName} 兌換了你的願望券`,
-            message: `「${d.title}」剛剛完成核銷兌換 ✨`,
-            tab: 'board',
-          });
-        }
-      });
-    });
-
-    const unsubWishlist = watchCollection<WishlistItem>('wishlist', setWishlistItems, (changes) => {
-      changes.forEach((c) => {
-        if (c.type !== 'added') return;
-        const d = c.data as WishlistItem;
-        if (d.creatorUid === user.uid) return;
-        const pName = getPartnerDisplayName(user.uid, d.creatorName);
-        showToast({
-          title: `${pName} 新增了愛心願望`,
-          message: `「${d.title}」已加入雙人清單 💗`,
-          tab: 'wishlist',
-        });
-      });
-    });
-
-    const unsubTimeline = watchCollection<TimelineNode>('timeline', setTimelineNodes, (changes) => {
-      changes.forEach((c) => {
-        if (c.type !== 'added') return;
-        const d = c.data as TimelineNode;
-        if (d.creatorUid === user.uid) return;
-        const pName = getPartnerDisplayName(user.uid, d.creatorName);
-        showToast({
-          title: `${pName} 寫下了新的故事回憶`,
-          message: `「${d.title}」已記錄到故事軸 📖`,
-          tab: 'story',
-        });
-      });
-    });
-
-    const unsubPolaroids = watchCollection<PolaroidPhoto>('polaroids', setPolaroids, (changes) => {
-      changes.forEach((c) => {
-        if (c.type !== 'added') return;
-        const d = c.data as PolaroidPhoto;
-        if (d.creatorUid === user.uid) return;
-        const pName = getPartnerDisplayName(user.uid, d.creatorName);
-        showToast({
-          title: `${pName} 上傳了新拍立得`,
-          message: d.frontCaption ? `「${d.frontCaption}」` : '拍立得照片牆多了一張新回憶 📷',
-          tab: 'story',
-        });
-      });
-    });
-
-    const unsubCapsules = watchCollection<TimeCapsuleLetter>('capsules', setCapsules, (changes) => {
-      changes.forEach((c) => {
-        if (c.type !== 'added') return;
-        const d = c.data as TimeCapsuleLetter;
-        if (d.senderUid === user.uid) return;
-        const pName = getPartnerDisplayName(user.uid, d.senderName);
-        showToast({
-          title: `${pName} 寄出了一封時光膠囊`,
-          message: `「${d.title}」等待你未來開啟 ⏳`,
-          tab: 'wishlist',
-        });
-      });
-    });
-
-    const unsubMemos = watchCollection<SharedMemo>('memos', setMemos, (changes) => {
+    const unsubMemos = watchCollection<SharedMemo>('memos', 30, setMemos, (changes) => {
       changes.forEach((c) => {
         if (c.type !== 'added') return;
         const d = c.data as SharedMemo;
-        if (d.creatorUid === user.uid) return;
-        const pName = getPartnerDisplayName(user.uid, d.creatorName);
-        showToast({
+        if (d.creatorUid === userUid) return;
+        const pName = getPartnerDisplayNameRef.current(userUid, d.creatorName);
+        showToastRef.current({
           title: `${pName} 新增了共享備忘錄`,
           message: `「${d.content}」`,
           tab: 'home',
@@ -493,15 +638,15 @@ function CoupleAppShell() {
       });
     });
 
-    const unsubSnaps = watchCollection<SnapStory>('snaps', setSnaps, (changes) => {
+    const unsubSnaps = watchCollection<SnapStory>('snaps', 20, setSnaps, (changes) => {
       changes.forEach((c) => {
         const d = c.data as SnapStory;
         const replyCount = (d.replies || []).length;
         if (c.type === 'added') {
           prevSnapRepliesCount[d.id] = replyCount;
-          if (d.creatorUid !== user.uid) {
-            const pName = getPartnerDisplayName(user.uid, d.creatorName);
-            showToast({
+          if (d.creatorUid !== userUid) {
+            const pName = getPartnerDisplayNameRef.current(userUid, d.creatorName);
+            showToastRef.current({
               title: `${pName} 發布了新的 24h 隨手拍`,
               message: d.caption ? `「${d.caption}」` : '拍了一張新照片分享給你，快點開看！',
               tab: 'home',
@@ -512,9 +657,9 @@ function CoupleAppShell() {
           prevSnapRepliesCount[d.id] = replyCount;
           if (replyCount > prevCount) {
             const latestReply = d.replies?.[replyCount - 1];
-            if (latestReply && latestReply.senderUid !== user.uid) {
-              const pName = getPartnerDisplayName(user.uid, latestReply.senderName);
-              showToast({
+            if (latestReply && latestReply.senderUid !== userUid) {
+              const pName = getPartnerDisplayNameRef.current(userUid, latestReply.senderName);
+              showToastRef.current({
                 title: `${pName} 回覆了隨手拍`,
                 message: `「${latestReply.text.slice(0, 36)}${latestReply.text.length > 36 ? '…' : ''}」`,
                 tab: 'home',
@@ -525,26 +670,26 @@ function CoupleAppShell() {
       });
     });
 
-    const unsubWishRequests = watchCollection<WishRequest>('wishRequests', setWishRequests, (changes) => {
+    const unsubWishRequests = watchCollection<WishRequest>('wishRequests', 20, setWishRequests, (changes) => {
       changes.forEach((c) => {
         const d = c.data as WishRequest;
-        if (c.type === 'added' && d.requesterUid !== user.uid) {
-          const pName = getPartnerDisplayName(user.uid, d.requesterName);
-          showToast({
+        if (c.type === 'added' && d.requesterUid !== userUid) {
+          const pName = getPartnerDisplayNameRef.current(userUid, d.requesterName);
+          showToastRef.current({
             title: `${pName} 向你許了一個願望`,
             message: `「${d.title}」等待你同意並轉為願望券 🌠`,
             tab: 'board',
           });
-        } else if (c.type === 'modified' && d.requesterUid === user.uid) {
-          const pName = getPartnerDisplayName(user.uid);
+        } else if (c.type === 'modified' && d.requesterUid === userUid) {
+          const pName = getPartnerDisplayNameRef.current(userUid);
           if (d.status === 'accepted') {
-            showToast({
+            showToastRef.current({
               title: `${pName} 同意了你的許願！`,
               message: `「${d.title}」已自動轉換成正式願望券 🎉`,
               tab: 'board',
             });
           } else if (d.status === 'declined') {
-            showToast({
+            showToastRef.current({
               title: `${pName} 回應了你的許願`,
               message: `「${d.title}」暫時先保留囉 💌`,
               tab: 'board',
@@ -555,19 +700,15 @@ function CoupleAppShell() {
     });
 
     return () => {
+      window.clearTimeout(unblockTimer);
       unsubSpace();
       unsubPartners();
       unsubChalk();
-      unsubVouchers();
-      unsubWishlist();
-      unsubTimeline();
-      unsubPolaroids();
-      unsubCapsules();
       unsubMemos();
       unsubSnaps();
       unsubWishRequests();
     };
-  }, [authReady, user, getPartnerDisplayName, showToast]);
+  }, [authReady, userUid, userEmail]);
 
   const handleGoogleLogin = async () => {
     setLoginLoading(true);
@@ -584,10 +725,20 @@ function CoupleAppShell() {
     }
   };
 
-  const myProfile = useMemo(
-    () => partners.find((p) => p.uid === user?.uid) || null,
-    [partners, user?.uid]
+  const fallbackProfile = useMemo(
+    () => (user ? buildFallbackPartnerProfile(user) : null),
+    [user]
   );
+
+  const myProfile = useMemo(() => {
+    const found = partners.find((p) => p.uid === user?.uid) || null;
+    if (found) return found;
+    // 若處於離線或雲端額度降級狀態，以本地備援個人檔案安全進入主畫面
+    if (cloudSyncDegraded || (syncResolved && !partnersSyncedFromCloud)) {
+      return fallbackProfile;
+    }
+    return null;
+  }, [partners, user?.uid, cloudSyncDegraded, syncResolved, partnersSyncedFromCloud, fallbackProfile]);
 
   const partnerProfile = useMemo(
     () => partners.find((p) => p.uid !== user?.uid) || null,
@@ -665,7 +816,7 @@ function CoupleAppShell() {
     );
   }
 
-  if (!coupleSpace) {
+  if (!coupleSpace && !syncResolved) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[var(--bg-canvas)] text-[var(--text-secondary)] text-sm">
         正在同步雲端紀念日與設定...
@@ -673,29 +824,48 @@ function CoupleAppShell() {
     );
   }
 
+  const effectiveCoupleSpace =
+    coupleSpace || buildFallbackCoupleSpace(user.uid, user.email || '');
+
   if (!myProfile || !activeProfile) {
+    // 僅確認已連上雲端且確實尚未建立個人檔案時才進入初次建檔流程
+    if (partnersSyncedFromCloud && !cloudSyncDegraded) {
+      return (
+        <RoleOnboardingModal
+          defaultName={user.displayName || ''}
+          defaultAvatar={user.photoURL || ''}
+          email={user.email || ''}
+          onSubmit={async ({ role, roleLabel, nickname, avatarDataUrl }) => {
+            const emailLower = (user.email || '').trim().toLowerCase();
+            try {
+              await setDoc(doc(db, 'partners', user.uid), {
+                uid: user.uid,
+                email: emailLower,
+                role,
+                roleLabel,
+                nickname,
+                avatarDataUrl,
+                allowedEmails: currentAllowedEmails,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            } catch (err) {
+              handleFirestoreError(err, OperationType.CREATE, `partners/${user.uid}`);
+              setCloudSyncDegraded(true);
+            }
+          }}
+        />
+      );
+    }
+
     return (
-      <RoleOnboardingModal
-        defaultName={user.displayName || ''}
-        defaultAvatar={user.photoURL || ''}
-        email={user.email || ''}
-        onSubmit={async ({ role, roleLabel, nickname, avatarDataUrl }) => {
-          const emailLower = (user.email || '').trim().toLowerCase();
-          await setDoc(doc(db, 'partners', user.uid), {
-            uid: user.uid,
-            email: emailLower,
-            role,
-            roleLabel,
-            nickname,
-            avatarDataUrl,
-            allowedEmails: currentAllowedEmails,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }}
-      />
+      <div className="min-h-screen flex items-center justify-center bg-[var(--bg-canvas)] text-[var(--text-secondary)] text-sm">
+        正在準備您的專屬空間...
+      </div>
     );
   }
+
+  const showOfflineBanner = !isOnline || (cloudSyncDegraded && !dismissedSyncBanner);
 
   return (
     <div className="min-h-screen relative overflow-x-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)] pb-28">
@@ -709,10 +879,22 @@ function CoupleAppShell() {
         style={{ backgroundColor: 'var(--accent-glow-2)' }}
       />
 
-      {!isOnline && (
-        <div className="sticky top-0 z-40 bg-amber-500 text-white px-4 py-2 text-xs font-medium flex items-center justify-center gap-2 shadow">
-          <WifiOff className="h-3.5 w-3.5" />
-          目前處於離線模式，連線恢復後將自動與彼此雙向同步
+      {showOfflineBanner && (
+        <div className="sticky top-0 z-40 bg-amber-500/95 backdrop-blur-md text-white px-4 py-2 text-xs font-medium flex items-center justify-center gap-2 shadow">
+          <WifiOff className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">
+            目前雲端暫時無法同步，已切換為離線/本地檢視模式
+          </span>
+          {cloudSyncDegraded && isOnline && (
+            <button
+              type="button"
+              onClick={() => setDismissedSyncBanner(true)}
+              aria-label="關閉同步提示"
+              className="ml-1 rounded-full p-0.5 hover:bg-white/20 transition shrink-0"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       )}
 
@@ -775,7 +957,7 @@ function CoupleAppShell() {
           >
             {activeTab === 'home' && (
               <HomeDashboard
-                coupleSpace={coupleSpace}
+                coupleSpace={effectiveCoupleSpace}
                 myProfile={myProfile}
                 partnerProfile={partnerProfile}
                 activeProfile={activeProfile}
@@ -802,6 +984,9 @@ function CoupleAppShell() {
                 wishRequests={wishRequests}
                 allowedEmails={currentAllowedEmails}
                 isPreviewPerspective={isPreview}
+                onRefreshData={() =>
+                  void loadCollectionOnDemand<WishVoucher>('vouchers', setVouchers, true)
+                }
               />
             )}
 
@@ -811,6 +996,10 @@ function CoupleAppShell() {
                 timelineNodes={timelineNodes}
                 polaroids={polaroids}
                 allowedEmails={currentAllowedEmails}
+                onRefreshData={() => {
+                  void loadCollectionOnDemand<TimelineNode>('timeline', setTimelineNodes, true);
+                  void loadCollectionOnDemand<PolaroidPhoto>('polaroids', setPolaroids, true);
+                }}
               />
             )}
 
@@ -821,12 +1010,16 @@ function CoupleAppShell() {
                 capsules={capsules}
                 allowedEmails={currentAllowedEmails}
                 accentHex={customPalette.accent}
+                onRefreshData={() => {
+                  void loadCollectionOnDemand<WishlistItem>('wishlist', setWishlistItems, true);
+                  void loadCollectionOnDemand<TimeCapsuleLetter>('capsules', setCapsules, true);
+                }}
               />
             )}
 
             {activeTab === 'settings' && (
               <SettingsSection
-                coupleSpace={coupleSpace}
+                coupleSpace={effectiveCoupleSpace}
                 myProfile={myProfile}
                 partner1DisplayName={partner1DisplayName}
                 partner2DisplayName={partner2DisplayName}

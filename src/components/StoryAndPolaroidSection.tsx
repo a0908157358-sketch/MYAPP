@@ -38,7 +38,8 @@ export const StoryAndPolaroidSection: React.FC<{
   timelineNodes: TimelineNode[];
   polaroids: PolaroidPhoto[];
   allowedEmails: string[];
-}> = ({ myProfile, timelineNodes, polaroids, allowedEmails }) => {
+  onRefreshData?: () => void;
+}> = ({ myProfile, timelineNodes, polaroids, allowedEmails, onRefreshData }) => {
   const [viewMode, setViewMode] = useState<'timeline' | 'polaroid'>('timeline');
 
   // Timeline state
@@ -171,6 +172,7 @@ export const StoryAndPolaroidSection: React.FC<{
       setStoryBody('');
       setStoryPhoto('');
       setShowAddStory(false);
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `timeline/${id}`);
     } finally {
@@ -206,6 +208,7 @@ export const StoryAndPolaroidSection: React.FC<{
       setPolBack('');
       setPolLoc('');
       setShowAddPolaroid(false);
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `polaroids/${id}`);
     } finally {
@@ -243,6 +246,7 @@ export const StoryAndPolaroidSection: React.FC<{
         [editingPol.id]: Math.min(prev[editingPol.id] || 0, editPolPhotos.length - 1),
       }));
       setEditingPol(null);
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `polaroids/${editingPol.id}`);
     } finally {
@@ -581,6 +585,7 @@ export const StoryAndPolaroidSection: React.FC<{
                               onClick={async () => {
                                 try {
                                   await deleteDoc(doc(db, 'polaroids', pol.id));
+                                  onRefreshData?.();
                                 } catch (err) {
                                   handleFirestoreError(err, OperationType.DELETE, `polaroids/${pol.id}`);
                                 }
@@ -669,6 +674,7 @@ export const StoryAndPolaroidSection: React.FC<{
                         setExpandedNode(null);
                         try {
                           await deleteDoc(doc(db, 'timeline', targetId));
+                          onRefreshData?.();
                         } catch (err) {
                           handleFirestoreError(err, OperationType.DELETE, `timeline/${targetId}`);
                         }

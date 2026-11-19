@@ -46,6 +46,7 @@ export const VoucherSection: React.FC<{
   wishRequests: WishRequest[];
   allowedEmails: string[];
   isPreviewPerspective?: boolean;
+  onRefreshData?: () => void;
 }> = ({
   activeProfile,
   realMyUid,
@@ -53,6 +54,7 @@ export const VoucherSection: React.FC<{
   wishRequests,
   allowedEmails,
   isPreviewPerspective = false,
+  onRefreshData,
 }) => {
   const [subTab, setSubTab] = useState<'wallet' | 'sent' | 'redeemed'>('wallet');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -224,6 +226,7 @@ export const VoucherSection: React.FC<{
                       redeemedByUid: realMyUid,
                       updatedAt: serverTimestamp(),
                     });
+                    onRefreshData?.();
                     setScanSuccessMsg('QR Code 驗證成功，已完成核銷！');
                     setTimeout(() => setScanTargetVoucher(null), 1300);
                     return;
@@ -290,6 +293,7 @@ export const VoucherSection: React.FC<{
       setDescription('');
       setShowCreateModal(false);
       setSubTab('sent');
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `vouchers/${id}`);
     } finally {
@@ -364,6 +368,7 @@ export const VoucherSection: React.FC<{
       });
       await batch.commit();
       setSubTab('sent');
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `wishRequests/${req.id}`);
     } finally {
@@ -411,6 +416,7 @@ export const VoucherSection: React.FC<{
       setPinInput('');
       setRedeemTargetId(null);
       setSubTab('redeemed');
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `vouchers/${redeemTarget.id}`);
     } finally {
@@ -435,6 +441,7 @@ export const VoucherSection: React.FC<{
       });
       setScanTargetVoucher(null);
       setSubTab('redeemed');
+      onRefreshData?.();
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `vouchers/${scanTargetVoucher.id}`);
     }
@@ -700,6 +707,7 @@ export const VoucherSection: React.FC<{
                       onClick={async () => {
                         try {
                           await deleteDoc(doc(db, 'vouchers', voucher.id));
+                          onRefreshData?.();
                         } catch (error) {
                           handleFirestoreError(error, OperationType.DELETE, `vouchers/${voucher.id}`);
                         }
